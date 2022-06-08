@@ -82,6 +82,17 @@ Status FunctionLikeBase::constant_substring_fn(LikeSearchState* state, const Str
     return Status::OK();
 }
 
+Status FunctionLikeBase::constant_regex_fn(LikeSearchState* state, const StringValue& val,
+                                            const StringValue& pattern, unsigned char* result) {
+    auto ret = hs_scan(state->hs_database.get(), val.ptr, val.len, 0,
+                       state->hs_scratch.get(), state->hs_match_handler, (void*)result);
+    if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
+        return Status::RuntimeError(fmt::format("hyperscan error: {}", ret));
+    }
+
+    return Status::OK();
+}
+
 Status FunctionLikeBase::execute_impl(FunctionContext* context, Block& block,
                                       const ColumnNumbers& arguments, size_t result,
                                       size_t /*input_rows_count*/) {
@@ -171,17 +182,6 @@ Status FunctionLike::like_fn(LikeSearchState* state, const StringValue& val,
 
     hs_free_scratch(scratch);
     hs_free_database(database);
-
-    return Status::OK();
-}
-
-Status FunctionLike::constant_regex_full_fn(LikeSearchState* state, const StringValue& val,
-                                            const StringValue& pattern, unsigned char* result) {
-    auto ret = hs_scan(state->hs_database.get(), val.ptr, val.len, 0,
-                       state->hs_scratch.get(), state->hs_match_handler, (void*)result);
-    if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-        return Status::RuntimeError(fmt::format("hyperscan error: {}", ret));
-    }
 
     return Status::OK();
 }
@@ -289,7 +289,7 @@ Status FunctionLike::prepare(FunctionContext* context, FunctionContext::Function
             state->search_state.hs_database.reset(database);
             state->search_state.hs_scratch.reset(scratch);
 
-            state->function = constant_regex_full_fn;
+            state->function = constant_regex_fn;
         }
     }
     return Status::OK();
@@ -339,21 +339,9 @@ Status FunctionRegexp::prepare(FunctionContext* context,
             state->search_state.hs_database.reset(database);
             state->search_state.hs_scratch.reset(scratch);
 
-            state->function = constant_regex_partial_fn;
+            state->function = constant_regex_fn;
         }
     }
-    return Status::OK();
-}
-
-Status FunctionRegexp::constant_regex_partial_fn(LikeSearchState* state, const StringValue& val,
-                                                 const StringValue& pattern,
-                                                 unsigned char* result) {
-    auto ret = hs_scan(state->hs_database.get(), val.ptr, val.len, 0,
-                       state->hs_scratch.get(), state->hs_match_handler, (void*)result);
-    if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-        return Status::RuntimeError(fmt::format("hyperscan error: {}", ret));
-    }
-
     return Status::OK();
 }
 
