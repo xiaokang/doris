@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <hs/hs.h>
 #include <re2/re2.h>
 
 #include <memory>
@@ -69,6 +70,29 @@ private:
 
         /// Used for RLIKE and REGEXP predicates if the pattern is a constant argument.
         std::unique_ptr<re2::RE2> regex;
+        template <typename Deleter, Deleter deleter>
+        struct HyperscanDeleter
+        {
+            template <typename T>
+            void operator()(T * ptr) const
+            {
+                deleter(ptr);
+            }
+        };
+
+        std::unique_ptr<hs_database_t, HyperscanDeleter<decltype(&hs_free_database), &hs_free_database>> hs_database;
+        std::unique_ptr<hs_scratch_t, HyperscanDeleter<decltype(&hs_free_scratch), &hs_free_scratch>> hs_scratch;
+
+        static int hs_match_handler(unsigned int /* from */, // NOLINT
+                                    unsigned long long /* from */, // NOLINT
+                                    unsigned long long /* to */, // NOLINT
+                                    unsigned int /* flags */,
+                                    void * ctx)
+        {
+            *((unsigned char*)ctx) = 1;
+            /// return non-zero to indicate hyperscan stop after first matched
+            return 1;
+        }
 
         LikePredicateState() : escape_char('\\') {}
 
