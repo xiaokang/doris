@@ -80,15 +80,18 @@ private:
             }
         };
 
+        // hyperscan compiled pattern database and scratch space, reused for performance
         std::unique_ptr<hs_database_t, HyperscanDeleter<decltype(&hs_free_database), &hs_free_database>> hs_database;
         std::unique_ptr<hs_scratch_t, HyperscanDeleter<decltype(&hs_free_scratch), &hs_free_scratch>> hs_scratch;
 
+        // hyperscan match callback
         static int hs_match_handler(unsigned int /* from */, // NOLINT
                                     unsigned long long /* from */, // NOLINT
                                     unsigned long long /* to */, // NOLINT
                                     unsigned int /* flags */,
                                     void * ctx)
         {
+            // set result to 1 for matched row
             *((unsigned char*)ctx) = 1;
             /// return non-zero to indicate hyperscan stop after first matched
             return 1;
@@ -104,6 +107,10 @@ private:
     };
 
     friend class OpcodeRegistry;
+
+    // hyperscan compile expression to database and allocate scratch space
+    static void hs_prepare(doris_udf::FunctionContext* context, const char* expression,
+                           hs_database_t **database, hs_scratch_t **scratch);
 
     static void like_prepare(doris_udf::FunctionContext* context,
                              doris_udf::FunctionContext::FunctionStateScope scope);
@@ -162,10 +169,6 @@ private:
     static doris_udf::BooleanVal constant_equals_fn(doris_udf::FunctionContext* context,
                                                     const doris_udf::StringVal& val,
                                                     const doris_udf::StringVal& pattern);
-
-    static doris_udf::BooleanVal constant_regex_fn_partial(doris_udf::FunctionContext* context,
-                                                           const doris_udf::StringVal& val,
-                                                           const doris_udf::StringVal& pattern);
 
     static doris_udf::BooleanVal constant_regex_fn(doris_udf::FunctionContext* context,
                                                    const doris_udf::StringVal& val,

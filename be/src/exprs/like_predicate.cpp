@@ -51,6 +51,27 @@ static const re2::RE2 LIKE_EQUALS_RE("(((\\\\%)|(\\\\_)|([^%_]))+)");
 
 void LikePredicate::init() {}
 
+void LikePredicate::hs_prepare(FunctionContext* context, const char* expression,
+                                 hs_database_t **database, hs_scratch_t **scratch) {
+    hs_compile_error_t *compile_err;
+    if (hs_compile(expression, HS_FLAG_DOTALL, HS_MODE_BLOCK, NULL, database,
+                &compile_err) != HS_SUCCESS) {
+        hs_free_compile_error(compile_err);
+        *database = nullptr;
+        if (context) context->set_error("hs_compile regex pattern error");
+        return;
+    }
+    hs_free_compile_error(compile_err);
+
+    if (hs_alloc_scratch(*database, scratch) != HS_SUCCESS) {
+        hs_free_database(*database);
+        *database = nullptr;
+        *scratch = nullptr;
+        if (context) context->set_error("hs_alloc_scratch allocate scratch space error");
+        return;
+    }
+}
+
 void LikePredicate::like_prepare(FunctionContext* context,
                                  FunctionContext::FunctionStateScope scope) {
     if (scope != FunctionContext::THREAD_LOCAL) {
@@ -89,24 +110,15 @@ void LikePredicate::like_prepare(FunctionContext* context,
                                  *reinterpret_cast<StringVal*>(context->get_constant_arg(1)),
                                  &re_pattern);
 
-            // hyperscan compile and scratch space allocation
-            hs_database_t *database;
-            hs_compile_error_t *compile_err;
-            if (hs_compile(re_pattern.c_str(), HS_FLAG_DOTALL, HS_MODE_BLOCK, NULL, &database,
-                        &compile_err) != HS_SUCCESS) {
-                hs_free_compile_error(compile_err);
-                context->set_error("hs_compile regex pattern error");
-            }
+            hs_database_t *database = nullptr;
+            hs_scratch_t *scratch = nullptr;
+            hs_prepare(context, re_pattern.c_str(), &database, &scratch);
+            if (!database || !scratch) return;
 
-            hs_scratch_t *scratch = NULL;
-            if (hs_alloc_scratch(database, &scratch) != HS_SUCCESS) {
-                hs_free_database(database);
-                context->set_error("hs_alloc_scratch allocate scratch space error");
-            }
             state->hs_database.reset(database);
             state->hs_scratch.reset(scratch);
 
-            // state->function = constant_regex_full_fn;
+            state->function = constant_regex_fn;
         }
     }
 }
@@ -161,24 +173,15 @@ void LikePredicate::regex_prepare(FunctionContext* context,
             state->set_search_string(search_string);
             state->function = constant_substring_fn;
         } else {
-            // hyperscan compile and scratch space allocation
-            hs_database_t *database;
-            hs_compile_error_t *compile_err;
-            if (hs_compile(pattern_str.c_str(), HS_FLAG_DOTALL, HS_MODE_BLOCK, NULL, &database,
-                        &compile_err) != HS_SUCCESS) {
-                hs_free_compile_error(compile_err);
-                context->set_error("hs_compile regex pattern error");
-            }
+            hs_database_t *database = nullptr;
+            hs_scratch_t *scratch = nullptr;
+            hs_prepare(context, pattern_str.c_str(), &database, &scratch);
+            if (!database || !scratch) return;
 
-            hs_scratch_t *scratch = NULL;
-            if (hs_alloc_scratch(database, &scratch) != HS_SUCCESS) {
-                hs_free_database(database);
-                context->set_error("hs_alloc_scratch allocate scratch space error");
-            }
             state->hs_database.reset(database);
             state->hs_scratch.reset(scratch);
 
-            state->function = constant_regex_fn_partial;
+            state->function = constant_regex_fn;
         }
     }
 }
@@ -260,7 +263,7 @@ BooleanVal LikePredicate::regexp_like(FunctionContext* context, const StringVal&
             return BooleanVal(false);
         }
     }
-    return constant_regex_fn_partial(context, val, pattern);
+    return constant_regex_fn(context, val, pattern);
 }
 
 void LikePredicate::regex_close(FunctionContext* context,
@@ -338,8 +341,8 @@ BooleanVal LikePredicate::constant_equals_fn(FunctionContext* context, const Str
     return BooleanVal(state->search_string_sv.eq(StringValue::from_string_val(val)));
 }
 
-BooleanVal LikePredicate::constant_regex_fn_partial(FunctionContext* context, const StringVal& val,
-                                                    const StringVal& pattern) {
+BooleanVal LikePredicate::constant_regex_fn(FunctionContext* context, const StringVal& val,
+                                            const StringVal& pattern) {
     if (val.is_null) {
         return BooleanVal::null();
     }
@@ -350,24 +353,13 @@ BooleanVal LikePredicate::constant_regex_fn_partial(FunctionContext* context, co
     auto ret = hs_scan(state->hs_database.get(), (const char*)val.ptr, val.len, 0,
                        state->hs_scratch.get(), state->hs_match_handler, (void*)&result);
     if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-        // context->set_error((const char*)fmt::format("hyperscan error: {}", ret));
+        context->set_error("hyperscan match error: " + ret);
         return false;
     }
     if (result)
         return true;
     else
         return false;
-}
-
-BooleanVal LikePredicate::constant_regex_fn(FunctionContext* context, const StringVal& val,
-                                            const StringVal& pattern) {
-    if (val.is_null) {
-        return BooleanVal::null();
-    }
-    LikePredicateState* state = reinterpret_cast<LikePredicateState*>(
-            context->get_function_state(FunctionContext::THREAD_LOCAL));
-    re2::StringPiece operand_sp(reinterpret_cast<const char*>(val.ptr), val.len);
-    return RE2::FullMatch(operand_sp, *state->regex);
 }
 
 BooleanVal LikePredicate::regex_match(FunctionContext* context, const StringVal& operand_value,
@@ -379,17 +371,7 @@ BooleanVal LikePredicate::regex_match(FunctionContext* context, const StringVal&
             context->get_function_state(FunctionContext::THREAD_LOCAL));
 
     if (context->is_arg_constant(1)) {
-        unsigned char result = 0;
-        auto ret = hs_scan(state->hs_database.get(), (const char*)operand_value.ptr, operand_value.len, 0,
-                        state->hs_scratch.get(), state->hs_match_handler, (void*)&result);
-        if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-            // context->set_error((const char*)fmt::format("hyperscan error: {}", ret));
-            return false;
-        }
-        if (result)
-            return true;
-        else
-            return false;
+        return constant_regex_fn(context, operand_value, pattern_value);
     } else {
         std::string re_pattern;
 
@@ -400,37 +382,21 @@ BooleanVal LikePredicate::regex_match(FunctionContext* context, const StringVal&
                                      pattern_value.len);
         }
 
-        hs_database_t *database;
-        hs_compile_error_t *compile_err;
-        if (hs_compile(re_pattern.c_str(), HS_FLAG_DOTALL, HS_MODE_BLOCK, NULL, &database,
-                    &compile_err) != HS_SUCCESS) {
-            hs_free_compile_error(compile_err);
-            // context->set_error((const char*)fmt::format("hyperscan error"));
-            return false;
-        }
-
-        hs_scratch_t *scratch = NULL;
-        if (hs_alloc_scratch(database, &scratch) != HS_SUCCESS) {
-            hs_free_database(database);
-            // context->set_error((const char*)fmt::format("hyperscan error"));
-            return false;
-        }
+        hs_database_t *database = nullptr;
+        hs_scratch_t *scratch = nullptr;
+        hs_prepare(context, re_pattern.c_str(), &database, &scratch);
+        if (!database || !scratch) return false;
 
         unsigned char result = 0;
         auto ret = hs_scan(database, (const char*)operand_value.ptr, operand_value.len, 0,
                         scratch, state->hs_match_handler, (void*)&result);
         if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-            // context->set_error((const char*)fmt::format("hyperscan error: {}", ret));
+            context->set_error("hyperscan match error: " + ret);
             return false;
         }
-
         hs_free_scratch(scratch);
         hs_free_database(database);
 
-        if (ret != HS_SUCCESS && ret != HS_SCAN_TERMINATED) {
-            // context->set_error((const char*)fmt::format("hyperscan error: {}", ret));
-            return false;
-        }
         if (result)
             return true;
         else
@@ -441,6 +407,8 @@ BooleanVal LikePredicate::regex_match(FunctionContext* context, const StringVal&
 void LikePredicate::convert_like_pattern(FunctionContext* context, const StringVal& pattern,
                                          std::string* re_pattern) {
     re_pattern->clear();
+
+    // add ^ to pattern head to match line head
     if (pattern.len > 0 && pattern.ptr[0] != '%') {
         re_pattern->append("^");
     }
@@ -472,6 +440,7 @@ void LikePredicate::convert_like_pattern(FunctionContext* context, const StringV
         }
     }
 
+    // add $ to pattern tail to match line tail
     if (pattern.len > 0 && pattern.ptr[pattern.len-1] != '%') {
         re_pattern->append("$");
     }
