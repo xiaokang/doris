@@ -100,6 +100,7 @@ set(EXPRS_TEST_FILES
     # exprs/in-predicate-test.cpp
     exprs/json_function_test.cpp
     exprs/string_functions_test.cpp
+    exprs/like_predicate_test.cpp
     exprs/timestamp_functions_test.cpp
     exprs/percentile_approx_test.cpp
     exprs/percentile_test.cpp

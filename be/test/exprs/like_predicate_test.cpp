@@ -38,29 +38,11 @@ public:
     LikePredicateTest() { }
 
 protected:
-    virtual void SetUp() {
-        context = new doris_udf::FunctionContext();
-    }
-    virtual void TearDown() { delete context; }
-
-private:
-    FunctionContext* context;
+    virtual void SetUp() { }
+    virtual void TearDown() { }
 };
 
 using DataSet = std::vector< std::pair<std::vector<const char*>, uint8_t> >;
-
-TEST_F(LikePredicateTest, regex_match) {
-    doris_udf::FunctionContext* context = new doris_udf::FunctionContext();
-    doris_udf::BooleanVal trueRet = doris_udf::BooleanVal(true);
-    doris_udf::BooleanVal falseRet = doris_udf::BooleanVal(false);
-    //doris_udf::BooleanVal nullRet = doris_udf::BooleanVal::null();
-
-    EXPECT_EQ(trueRet, LikePredicate::regex_match(context, StringVal("abc"), StringVal(".*b.*"), false));
-
-    EXPECT_EQ(falseRet, LikePredicate::regex_match(context, StringVal("abc"), StringVal(".*ad.*"), false));
-
-    delete context;
-}
 
 TEST_F(LikePredicateTest, like) {
     doris_udf::BooleanVal trueRet = doris_udf::BooleanVal(true);
