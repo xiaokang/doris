@@ -254,6 +254,7 @@ import org.apache.doris.qe.SqlModeHelper;
         keywordMap.put("install", new Integer(SqlParserSymbols.KW_INSTALL));
         keywordMap.put("job", new Integer(SqlParserSymbols.KW_JOB));
         keywordMap.put("join", new Integer(SqlParserSymbols.KW_JOIN));
+        keywordMap.put("json", new Integer(SqlParserSymbols.KW_JSON));
         keywordMap.put("key", new Integer(SqlParserSymbols.KW_KEY));
         keywordMap.put("keys", new Integer(SqlParserSymbols.KW_KEYS));
         keywordMap.put("kill", new Integer(SqlParserSymbols.KW_KILL));

@@ -100,7 +100,11 @@ message PGenericType {
         BYTES = 26;
         NOTHING = 27;
         DATEV2 = 28;
+<<<<<<< HEAD
         DATETIMEV2 = 29;
+=======
+        JSON = 29;
+>>>>>>> c7da55afe (add FE support for JSON datatype and RPC definitions)
         UNKNOWN = 999;
     }
     required TypeId id = 2;
