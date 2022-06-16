@@ -38,6 +38,7 @@
 #include "vec/data_types/data_type_nullable.h"
 #include "vec/data_types/data_type_number.h"
 #include "vec/data_types/data_type_string.h"
+#include "vec/data_types/data_type_json.h"
 
 namespace doris::vectorized {
 
@@ -73,7 +74,7 @@ public:
                                           BeConsts::MAX_DECIMAL64_PRECISION, 0)},
                     {"Decimal128", std::make_shared<DataTypeDecimal<Decimal128>>(
                                            BeConsts::MAX_DECIMAL128_PRECISION, 0)},
-
+                    {"Json", std::make_shared<DataTypeJson>()},
             };
             for (auto const& [key, val] : base_type_map) {
                 instance.register_data_type(key, val);
