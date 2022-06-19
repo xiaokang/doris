@@ -19,7 +19,9 @@
 
 #include <string>
 
+#include "json_value.h"
 #include "vec/columns/column_decimal.h"
+#include "vec/columns/column_json.h"
 #include "vec/columns/columns_number.h"
 #include "vec/core/types.h"
 
@@ -68,6 +70,7 @@ enum PrimitiveType {
     TYPE_DECIMAL32,      /* 28 */
     TYPE_DECIMAL64,      /* 29 */
     TYPE_DECIMAL128,     /* 30 */
+    TYPE_JSON            /* 31 */
 };
 
 PrimitiveType convert_type_to_primitive(FunctionContext::Type type);
@@ -202,6 +205,12 @@ template <>
 struct PrimitiveTypeTraits<TYPE_HLL> {
     using CppType = StringValue;
     using ColumnType = vectorized::ColumnString;
+};
+
+template <>
+struct PrimitiveTypeTraits<TYPE_JSON> {
+    using CppType = JsonValue;
+    using ColumnType = vectorized::ColumnJson;
 };
 
 // only for adapt get_predicate_column_ptr
