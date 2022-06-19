@@ -657,11 +657,8 @@ int get_slot_size(PrimitiveType type) {
 
     case TYPE_BIGINT:
     case TYPE_DOUBLE:
-<<<<<<< HEAD
     case TYPE_TIME:
     case TYPE_DECIMAL64:
-=======
->>>>>>> 086faa13a (add JsonValue to convert String JSON to BINARY JSON and JsonLiteral case for vliteral)
         return 8;
 
     case TYPE_LARGEINT:
