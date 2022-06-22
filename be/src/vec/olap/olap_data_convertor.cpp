@@ -578,6 +578,7 @@ Status OlapBlockDataConvertor::OlapColumnDataConvertorDate::convert_to_olap() {
         return Status::OK();
     }
 }
+
 // class OlapBlockDataConvertor::OlapColumnDataConvertorJson
 void OlapBlockDataConvertor::OlapColumnDataConvertorJson::set_source_column(
         const ColumnWithTypeAndName& typed_column, size_t row_pos, size_t num_rows) {
@@ -647,104 +648,6 @@ Status OlapBlockDataConvertor::OlapColumnDataConvertorJson::convert_to_olap() {
         assert(slice == _slice.get_end_ptr());
     }
     return Status::OK();
-}
-
-Status OlapBlockDataConvertor::OlapColumnDataConvertorDate::convert_to_olap() {
-    assert(_typed_column.column);
-    const vectorized::ColumnVector<vectorized::Int64>* column_datetime = nullptr;
-    if (_nullmap) {
-        auto nullable_column =
-                assert_cast<const vectorized::ColumnNullable*>(_typed_column.column.get());
-        column_datetime = assert_cast<const vectorized::ColumnVector<vectorized::Int64>*>(
-                nullable_column->get_nested_column_ptr().get());
-    } else {
-        from_date_v2_ = false;
-    }
-}
-
-Status OlapBlockDataConvertor::OlapColumnDataConvertorDate::convert_to_olap() {
-    assert(_typed_column.column);
-    if (from_date_v2_) {
-        const vectorized::ColumnVector<vectorized::UInt32>* column_datetime = nullptr;
-        if (_nullmap) {
-            auto nullable_column =
-                    assert_cast<const vectorized::ColumnNullable*>(_typed_column.column.get());
-            column_datetime = assert_cast<const vectorized::ColumnVector<vectorized::UInt32>*>(
-                    nullable_column->get_nested_column_ptr().get());
-        } else {
-            column_datetime = assert_cast<const vectorized::ColumnVector<vectorized::UInt32>*>(
-                    _typed_column.column.get());
-        }
-
-        assert(column_datetime);
-
-        const DateV2Value* datetime_cur =
-                (const DateV2Value*)(column_datetime->get_data().data()) + _row_pos;
-        const DateV2Value* datetime_end = datetime_cur + _num_rows;
-        uint24_t* value = _values.data();
-        if (_nullmap) {
-            const UInt8* nullmap_cur = _nullmap;
-            while (datetime_cur != datetime_end) {
-                if (!*nullmap_cur) {
-                    *value = datetime_cur->to_olap_date();
-                } else {
-                    // do nothing
-                }
-                ++value;
-                ++datetime_cur;
-                ++nullmap_cur;
-            }
-            assert(nullmap_cur == _nullmap + _num_rows && value == _values.get_end_ptr());
-        } else {
-            while (datetime_cur != datetime_end) {
-                *value = datetime_cur->to_olap_date();
-                ++value;
-                ++datetime_cur;
-            }
-            assert(value == _values.get_end_ptr());
-        }
-        return Status::OK();
-    } else {
-        const vectorized::ColumnVector<vectorized::Int64>* column_datetime = nullptr;
-        if (_nullmap) {
-            auto nullable_column =
-                    assert_cast<const vectorized::ColumnNullable*>(_typed_column.column.get());
-            column_datetime = assert_cast<const vectorized::ColumnVector<vectorized::Int64>*>(
-                    nullable_column->get_nested_column_ptr().get());
-        } else {
-            column_datetime = assert_cast<const vectorized::ColumnVector<vectorized::Int64>*>(
-                    _typed_column.column.get());
-        }
-
-        assert(column_datetime);
-
-        const VecDateTimeValue* datetime_cur =
-                (const VecDateTimeValue*)(column_datetime->get_data().data()) + _row_pos;
-        const VecDateTimeValue* datetime_end = datetime_cur + _num_rows;
-        uint24_t* value = _values.data();
-        if (_nullmap) {
-            const UInt8* nullmap_cur = _nullmap;
-            while (datetime_cur != datetime_end) {
-                if (!*nullmap_cur) {
-                    *value = datetime_cur->to_olap_date();
-                } else {
-                    // do nothing
-                }
-                ++value;
-                ++datetime_cur;
-                ++nullmap_cur;
-            }
-            assert(nullmap_cur == _nullmap + _num_rows && value == _values.get_end_ptr());
-        } else {
-            while (datetime_cur != datetime_end) {
-                *value = datetime_cur->to_olap_date();
-                ++value;
-                ++datetime_cur;
-            }
-            assert(value == _values.get_end_ptr());
-        }
-        return Status::OK();
-    }
 }
 
 Status OlapBlockDataConvertor::OlapColumnDataConvertorDateTime::convert_to_olap() {
