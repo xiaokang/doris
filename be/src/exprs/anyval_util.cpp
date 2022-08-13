@@ -179,6 +179,10 @@ FunctionContext::TypeDesc AnyValUtil::column_type_to_type_desc(const TypeDescrip
         out.type = FunctionContext::TYPE_VARCHAR;
         out.len = type.len;
         break;
+    case TYPE_JSON:
+        out.type = FunctionContext::TYPE_JSON;
+        out.len = type.len;
+        break;
     case TYPE_HLL:
         out.type = FunctionContext::TYPE_HLL;
         out.len = type.len;
