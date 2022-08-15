@@ -70,6 +70,16 @@ void DataTypeJson::to_string(const class doris::vectorized::IColumn& column, siz
     ostr.write(str.c_str(), str.size());
 }
 
+Status DataTypeJson::from_string(ReadBuffer& rb, IColumn* column) const {
+    JsonValue value(rb.position(), rb.count());
+    Field field = JsonField(value.value(), value.size());
+
+    auto* column_data = static_cast<ColumnJson*>(column);
+    column_data->insert(field);
+
+    return Status::OK();
+}
+
 MutableColumnPtr DataTypeJson::create_column() const {
     return ColumnJson::create();
 }

@@ -1169,6 +1169,18 @@ private:
         };
     }
 
+    WrapperType create_json_wrapper(const DataTypePtr& from_type,
+                                     const DataTypeJson& to_type) const {
+        /// Conversion from String through parsing.
+        if (check_and_get_data_type<DataTypeString>(from_type.get())) {
+            return &ConvertImplGenericFromString<ColumnString>::execute;
+        }
+
+        LOG(FATAL) << "Illegal CAST from " << from_type->get_name() << " to JSON";
+
+        return nullptr;
+    }
+
     WrapperType prepare_unpack_dictionaries(const DataTypePtr& from_type,
                                             const DataTypePtr& to_type) const {
         const auto& from_nested = from_type;
@@ -1326,6 +1338,8 @@ private:
             return create_string_wrapper(from_type);
         case TypeIndex::Array:
             return create_array_wrapper(from_type, static_cast<const DataTypeArray&>(*to_type));
+        case TypeIndex::JSON:
+            return create_json_wrapper(from_type, static_cast<const DataTypeJson&>(*to_type));
         default:
             break;
         }
