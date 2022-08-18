@@ -168,8 +168,8 @@ public:
     }
 
 private:
-    char* data;
-    uint32_t size;
+    char* data = nullptr;
+    uint32_t size = 0;
 };
 
 template <typename T>
