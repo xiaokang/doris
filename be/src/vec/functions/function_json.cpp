@@ -27,9 +27,11 @@
 #include "util/string_util.h"
 #include "vec/columns/column.h"
 #include "vec/columns/column_nullable.h"
+#include "vec/columns/column_json.h"
 #include "vec/columns/column_string.h"
 #include "vec/columns/column_vector.h"
 #include "vec/common/string_ref.h"
+#include "vec/data_types/data_type_json.h"
 #include "vec/data_types/data_type_number.h"
 #include "vec/data_types/data_type_string.h"
 #include "vec/functions/function_string.h"
@@ -583,11 +585,257 @@ public:
     }
 };
 
+// func(json,string) -> nullable(type)
+template <typename Impl>
+class FunctionJsonExtract : public IFunction {
+public:
+    static constexpr auto name = Impl::name;
+    static FunctionPtr create() { return std::make_shared<FunctionJsonExtract>(); }
+    String get_name() const override { return name; }
+    size_t get_number_of_arguments() const override { return 2; }
+    DataTypePtr get_return_type_impl(const DataTypes& arguments) const override {
+        return make_nullable(std::make_shared<typename Impl::ReturnType>());
+    }
+
+    bool use_default_implementation_for_constants() const override { return true; }
+
+    Status execute_impl(FunctionContext* context, Block& block, const ColumnNumbers& arguments,
+                        size_t result, size_t input_rows_count) override {
+        auto null_map = ColumnUInt8::create(input_rows_count, 0);
+        DCHECK_EQ(arguments.size(), 2);
+        ColumnPtr argument_columns[2];
+        for (int i = 0; i < 2; ++i) {
+            argument_columns[i] =
+                    block.get_by_position(arguments[i]).column->convert_to_full_column_if_const();
+            if (auto* nullable = check_and_get_column<ColumnNullable>(*argument_columns[i])) {
+                // Danger: Here must dispose the null map data first! Because
+                // argument_columns[i]=nullable->get_nested_column_ptr(); will release the mem
+                // of column nullable mem of null map
+                VectorizedUtils::update_null_map(null_map->get_data(),
+                                                 nullable->get_null_map_data());
+                argument_columns[i] = nullable->get_nested_column_ptr();
+            }
+        }
+
+        auto res = Impl::ColumnType::create();
+
+        auto json_data_column = assert_cast<const ColumnJson*>(argument_columns[0].get());
+        auto json_path_column = assert_cast<const ColumnString*>(argument_columns[1].get());
+
+        auto& ldata = json_data_column->get_chars();
+        auto& loffsets = json_data_column->get_offsets();
+
+        auto& rdata = json_path_column->get_chars();
+        auto& roffsets = json_path_column->get_offsets();
+
+        // execute Impl
+        if constexpr (std::is_same_v<typename Impl::ReturnType, DataTypeString>) {
+            auto& res_data = res->get_chars();
+            auto& res_offsets = res->get_offsets();
+            Impl::vector_vector(context, ldata, loffsets, rdata, roffsets, res_data, res_offsets,
+                                null_map->get_data());
+        } else {
+            Impl::vector_vector(context, ldata, loffsets, rdata, roffsets, res->get_data(),
+                                null_map->get_data());
+        }
+        block.get_by_position(result).column =
+                ColumnNullable::create(std::move(res), std::move(null_map));
+        return Status::OK();
+    }
+};
+
+struct JsonExtratStringImpl {
+    using ReturnType = DataTypeString;
+    using ColumnType = ColumnString;
+    // for json_extract_string
+    static void vector_vector(FunctionContext* context,
+                              const ColumnString::Chars& ldata,
+                              const ColumnString::Offsets& loffsets,
+                              const ColumnString::Chars& rdata,
+                              const ColumnString::Offsets& roffsets,
+                              ColumnString::Chars& res_data,
+                              ColumnString::Offsets& res_offsets, NullMap& null_map) {
+        size_t input_rows_count = loffsets.size();
+        res_offsets.resize(input_rows_count);
+
+        for (size_t i = 0; i < input_rows_count; ++i) {
+            int l_size = loffsets[i] - loffsets[i - 1] - 1;
+            const auto l_raw = reinterpret_cast<const char*>(&ldata[loffsets[i - 1]]);
+
+            int r_size = roffsets[i] - roffsets[i - 1] - 1;
+            const auto r_raw = reinterpret_cast<const char*>(&rdata[roffsets[i - 1]]);
+
+            if (null_map[i]) {
+                StringOP::push_null_string(i, res_data, res_offsets, null_map);
+                continue;
+            }
+
+            // doc is NOT necessary to be deleted since JsonbDocument will not allocate memory
+            JsonbDocument* doc = JsonbDocument::createDocument(l_raw, l_size);
+            if (UNLIKELY(!doc || !doc->getValue())) {
+                StringOP::push_null_string(i, res_data, res_offsets, null_map);
+                continue;
+            }
+
+            // value is NOT necessary to be deleted since JsonbValue will not allocate memory
+            JsonbValue* value = doc->getValue()->findPath(r_raw, r_size, ".", nullptr);
+            if (UNLIKELY(!value)) {
+                LOG(WARNING) << "xk debug value is null for path " << r_raw;
+                StringOP::push_null_string(i, res_data, res_offsets, null_map);
+                continue;
+            }
+
+            if (LIKELY(value->isString())) {
+                auto str_value = (JsonbStringVal*)value;
+                StringOP::push_value_string(std::string_view(str_value->getBlob(), str_value->length()),
+                                            i, res_data, res_offsets);
+                LOG(WARNING) << "xk debug set value " << str_value->getBlob() << " for path " << r_raw;
+            } else {
+                LOG(WARNING) << "xk debug value is not string for path " << r_raw;
+                StringOP::push_null_string(i, res_data, res_offsets, null_map);
+                continue;
+            }
+        }
+    }
+};
+
+template <typename ValueType>
+struct JsonExtratImpl {
+    using ReturnType = typename ValueType::ReturnType;
+    using ColumnType = typename ValueType::ColumnType;
+    using Container = typename ColumnType::Container;
+
+    // for json_extract_int/int64/double
+    static void vector_vector(FunctionContext* context,
+                              const ColumnString::Chars& ldata,
+                              const ColumnString::Offsets& loffsets,
+                              const ColumnString::Chars& rdata,
+                              const ColumnString::Offsets& roffsets,
+                              Container& res,
+                              NullMap& null_map) {
+        size_t size = loffsets.size();
+        res.resize(size);
+        for (size_t i = 0; i < loffsets.size(); i++) {
+            const char* l_raw_str = reinterpret_cast<const char*>(&ldata[loffsets[i - 1]]);
+            int l_str_size = loffsets[i] - loffsets[i - 1] - 1;
+
+            const char* r_raw_str = reinterpret_cast<const char*>(&rdata[roffsets[i - 1]]);
+            int r_str_size = roffsets[i] - roffsets[i - 1] - 1;
+
+            if (null_map[i]) {
+                res[i] = 0;
+                continue;
+            }
+
+            // doc is NOT necessary to be deleted since JsonbDocument will not allocate memory
+            JsonbDocument* doc = JsonbDocument::createDocument(l_raw_str, l_str_size);
+            if (UNLIKELY(!doc || !doc->getValue())) {
+                LOG(WARNING) << "xk debug doc or value is null for data " << l_raw_str;
+                null_map[i] = 1;
+                res[i] = 0;
+                continue;
+            }
+
+            // value is NOT necessary to be deleted since JsonbValue will not allocate memory
+            JsonbValue* value = doc->getValue()->findPath(r_raw_str, r_str_size, ".", nullptr);
+            if (UNLIKELY(!value)) {
+                LOG(WARNING) << "xk debug value is null for path " << r_raw_str;
+                null_map[i] = 1;
+                res[i] = 0;
+                continue;
+            }
+
+            if constexpr (std::is_same_v<int32_t, typename ValueType::T>) {
+                if (value->isInt8() || value->isInt16() || value->isInt32()) {
+                    res[i] = (int32_t)((const JsonbIntVal*)value)->val();
+                    LOG(INFO) << "xk debug set value " << res[i] << " for path " << r_raw_str;
+                } else {
+                    LOG(WARNING) << "xk debug value is not int for path " << r_raw_str;
+                    null_map[i] = 1;
+                    res[i] = 0;
+                }
+            } else if constexpr (std::is_same_v<int64_t, typename ValueType::T>) {
+                if (value->isInt64()) {
+                    res[i] = ((const JsonbInt64Val*)value)->val();
+                    LOG(WARNING) << "xk debug set value " << res[i] << " for path " << r_raw_str;
+                } else {
+                    LOG(WARNING) << "xk debug value is not int for path " << r_raw_str;
+                    null_map[i] = 1;
+                    res[i] = 0;
+                }
+            } else if constexpr (std::is_same_v<double, typename ValueType::T>) {
+                if (value->isDouble()) {
+                    res[i] = ((const JsonbDoubleVal*)value)->val();
+                    LOG(WARNING) << "xk debug set value " << res[i] << " for path " << r_raw_str;
+                } else {
+                    LOG(WARNING) << "xk debug value is not int for path " << r_raw_str;
+                    null_map[i] = 1;
+                    res[i] = 0;
+                }
+            } else {
+                LOG(FATAL) << "unexpected type ";
+            }
+        }
+
+    }
+};
+
+struct JsonTypeInt {
+    using T = int32_t;
+    using ReturnType = DataTypeInt32;
+    using ColumnType = ColumnVector<T>;
+};
+
+struct JsonTypeInt64 {
+    using T = int64_t;
+    using ReturnType = DataTypeInt64;
+    using ColumnType = ColumnVector<T>;
+};
+
+struct JsonTypeDouble {
+    using T = double;
+    using ReturnType = DataTypeFloat64;
+    using ColumnType = ColumnVector<T>;
+};
+
+struct JsonTypeString {
+    using T = std::string;
+    using ReturnType = DataTypeString;
+    using ColumnType = ColumnString;
+};
+
+struct JsonExtractInt : public JsonExtratImpl<JsonTypeInt> {
+    static constexpr auto name = "json_extract_int";
+};
+
+struct JsonExtractBigInt : public JsonExtratImpl<JsonTypeInt64> {
+    static constexpr auto name = "json_extract_bigint";
+};
+
+struct JsonExtractDouble : public JsonExtratImpl<JsonTypeDouble> {
+    static constexpr auto name = "json_extract_double";
+};
+
+struct JsonExtractString : public JsonExtratStringImpl {
+    static constexpr auto name = "json_extract_string";
+};
+
+using FunctionJsonExtractInt = FunctionJsonExtract<JsonExtractInt>;
+using FunctionJsonExtractBigInt = FunctionJsonExtract<JsonExtractBigInt>;
+using FunctionJsonExtractDouble = FunctionJsonExtract<JsonExtractDouble>;
+using FunctionJsonExtractString = FunctionJsonExtract<JsonExtractString>;
+
+
 using FunctionGetJsonDouble = FunctionBinaryStringOperateToNullType<GetJsonDouble>;
 using FunctionGetJsonInt = FunctionBinaryStringOperateToNullType<GetJsonInt>;
 using FunctionGetJsonString = FunctionBinaryStringOperateToNullType<GetJsonString>;
 
 void register_function_json(SimpleFunctionFactory& factory) {
+    factory.register_function<FunctionJsonExtractInt>();
+    factory.register_function<FunctionJsonExtractBigInt>();
+    factory.register_function<FunctionJsonExtractDouble>();
+    factory.register_function<FunctionJsonExtractString>();
+
     factory.register_function<FunctionGetJsonInt>();
     factory.register_function<FunctionGetJsonDouble>();
     factory.register_function<FunctionGetJsonString>();
