@@ -647,6 +647,8 @@ public:
 struct JsonExtratStringImpl {
     using ReturnType = DataTypeString;
     using ColumnType = ColumnString;
+    static const bool only_check_exists = false;
+
     // for json_extract_string
     static void vector_vector(FunctionContext* context,
                               const ColumnString::Chars& ldata,
@@ -704,6 +706,7 @@ struct JsonExtratImpl {
     using ReturnType = typename ValueType::ReturnType;
     using ColumnType = typename ValueType::ColumnType;
     using Container = typename ColumnType::Container;
+    static const bool only_check_exists = ValueType::only_check_exists;
 
     // for json_extract_int/int64/double
     static void vector_vector(FunctionContext* context,
@@ -715,7 +718,12 @@ struct JsonExtratImpl {
                               NullMap& null_map) {
         size_t size = loffsets.size();
         res.resize(size);
+
         for (size_t i = 0; i < loffsets.size(); i++) {
+            if constexpr (only_check_exists) {
+                res[i] = 0;
+            }
+
             const char* l_raw_str = reinterpret_cast<const char*>(&ldata[loffsets[i - 1]]);
             int l_str_size = loffsets[i] - loffsets[i - 1] - 1;
 
@@ -742,6 +750,12 @@ struct JsonExtratImpl {
                 LOG(WARNING) << "xk debug value is null for path " << r_raw_str;
                 null_map[i] = 1;
                 res[i] = 0;
+                continue;
+            }
+
+            // if only check path exists, it's true here and skip check value
+            if constexpr (only_check_exists) {
+                res[i] = 1;
                 continue;
             }
 
@@ -780,28 +794,43 @@ struct JsonExtratImpl {
     }
 };
 
+struct JsonTypeExists {
+    using T = uint8_t;
+    using ReturnType = DataTypeUInt8;
+    using ColumnType = ColumnVector<T>;
+    static const bool only_check_exists = true;
+};
+
 struct JsonTypeInt {
     using T = int32_t;
     using ReturnType = DataTypeInt32;
     using ColumnType = ColumnVector<T>;
+    static const bool only_check_exists = false;
 };
 
 struct JsonTypeInt64 {
     using T = int64_t;
     using ReturnType = DataTypeInt64;
     using ColumnType = ColumnVector<T>;
+    static const bool only_check_exists = false;
 };
 
 struct JsonTypeDouble {
     using T = double;
     using ReturnType = DataTypeFloat64;
     using ColumnType = ColumnVector<T>;
+    static const bool only_check_exists = false;
 };
 
 struct JsonTypeString {
     using T = std::string;
     using ReturnType = DataTypeString;
     using ColumnType = ColumnString;
+    static const bool only_check_exists = false;
+};
+
+struct JsonExists : public JsonExtratImpl<JsonTypeExists> {
+    static constexpr auto name = "json_exists_path";
 };
 
 struct JsonExtractInt : public JsonExtratImpl<JsonTypeInt> {
@@ -820,6 +849,9 @@ struct JsonExtractString : public JsonExtratStringImpl {
     static constexpr auto name = "json_extract_string";
 };
 
+
+using FunctionJsonExists = FunctionJsonExtract<JsonExists>;
+
 using FunctionJsonExtractInt = FunctionJsonExtract<JsonExtractInt>;
 using FunctionJsonExtractBigInt = FunctionJsonExtract<JsonExtractBigInt>;
 using FunctionJsonExtractDouble = FunctionJsonExtract<JsonExtractDouble>;
@@ -831,6 +863,8 @@ using FunctionGetJsonInt = FunctionBinaryStringOperateToNullType<GetJsonInt>;
 using FunctionGetJsonString = FunctionBinaryStringOperateToNullType<GetJsonString>;
 
 void register_function_json(SimpleFunctionFactory& factory) {
+    factory.register_function<FunctionJsonExists>();
+
     factory.register_function<FunctionJsonExtractInt>();
     factory.register_function<FunctionJsonExtractBigInt>();
     factory.register_function<FunctionJsonExtractDouble>();
