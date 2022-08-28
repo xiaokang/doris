@@ -350,6 +350,34 @@ public:
 
     JsonbType type() const { return type_; }
 
+    const char* typeName() const {
+        switch (type_) {
+        case JsonbType::T_Null:
+            return "null";
+        case JsonbType::T_True:
+        case JsonbType::T_False:
+            return "bool";
+        case JsonbType::T_Int8:
+        case JsonbType::T_Int16:
+        case JsonbType::T_Int32:
+            return "int";
+        case JsonbType::T_Int64:
+            return "bigint";
+        case JsonbType::T_Double:
+            return "double";
+        case JsonbType::T_String:
+            return "string";
+        case JsonbType::T_Binary:
+            return "binary";
+        case JsonbType::T_Object:
+            return "object";
+        case JsonbType::T_Array:
+            return "array";
+        default:
+            return "unknown";
+        }
+    }
+
     // size of the total packed bytes
     unsigned int numPackedBytes() const;
 
@@ -999,7 +1027,21 @@ inline const char* JsonbValue::getValuePtr() const {
 
 inline JsonbValue* JsonbValue::findPath(const char* key_path, unsigned int kp_len,
                                         const char* delim = ".", hDictFind handler = nullptr) {
-    if (!key_path || !kp_len) return nullptr;
+    if (!key_path) return nullptr;
+    if (kp_len == 0) return this;
+
+    // skip $ and . at beginning
+    if (kp_len > 0 && *key_path == '$') {
+        key_path++;
+        kp_len--;
+        if (kp_len > 0 && *key_path == '.') {
+            key_path++;
+            kp_len--;
+        }
+    }
+
+    if (kp_len == 0) return this;
+
 
     if (!delim) delim = "."; // default delimiter
 

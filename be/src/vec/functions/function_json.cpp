@@ -644,6 +644,7 @@ public:
     }
 };
 
+template <bool only_get_type>
 struct JsonExtratStringImpl {
     using ReturnType = DataTypeString;
     using ColumnType = ColumnString;
@@ -684,6 +685,12 @@ struct JsonExtratStringImpl {
             if (UNLIKELY(!value)) {
                 LOG(WARNING) << "xk debug value is null for path " << r_raw;
                 StringOP::push_null_string(i, res_data, res_offsets, null_map);
+                continue;
+            }
+
+            if constexpr(only_get_type) {
+                StringOP::push_value_string(std::string_view(value->typeName()),
+                                            i, res_data, res_offsets);
                 continue;
             }
 
@@ -769,8 +776,8 @@ struct JsonExtratImpl {
                     res[i] = 0;
                 }
             } else if constexpr (std::is_same_v<int64_t, typename ValueType::T>) {
-                if (value->isInt64()) {
-                    res[i] = ((const JsonbInt64Val*)value)->val();
+                if (value->isInt8() || value->isInt16() || value->isInt32() || value->isInt64()) {
+                    res[i] = ((const JsonbIntVal*)value)->val();
                     LOG(WARNING) << "xk debug set value " << res[i] << " for path " << r_raw_str;
                 } else {
                     LOG(WARNING) << "xk debug value is not int for path " << r_raw_str;
@@ -781,6 +788,8 @@ struct JsonExtratImpl {
                 if (value->isDouble()) {
                     res[i] = ((const JsonbDoubleVal*)value)->val();
                     LOG(WARNING) << "xk debug set value " << res[i] << " for path " << r_raw_str;
+                } else if (value->isInt8() || value->isInt16() || value->isInt32() || value->isInt64()) {
+                    res[i] = ((const JsonbIntVal*)value)->val();
                 } else {
                     LOG(WARNING) << "xk debug value is not int for path " << r_raw_str;
                     null_map[i] = 1;
@@ -845,12 +854,17 @@ struct JsonExtractDouble : public JsonExtratImpl<JsonTypeDouble> {
     static constexpr auto name = "json_extract_double";
 };
 
-struct JsonExtractString : public JsonExtratStringImpl {
+struct JsonExtractString : public JsonExtratStringImpl<false> {
     static constexpr auto name = "json_extract_string";
+};
+
+struct JsonType : public JsonExtratStringImpl<true> {
+    static constexpr auto name = "json_type";
 };
 
 
 using FunctionJsonExists = FunctionJsonExtract<JsonExists>;
+using FunctionJsonType = FunctionJsonExtract<JsonType>;
 
 using FunctionJsonExtractInt = FunctionJsonExtract<JsonExtractInt>;
 using FunctionJsonExtractBigInt = FunctionJsonExtract<JsonExtractBigInt>;
@@ -864,6 +878,7 @@ using FunctionGetJsonString = FunctionBinaryStringOperateToNullType<GetJsonStrin
 
 void register_function_json(SimpleFunctionFactory& factory) {
     factory.register_function<FunctionJsonExists>();
+    factory.register_function<FunctionJsonType>();
 
     factory.register_function<FunctionJsonExtractInt>();
     factory.register_function<FunctionJsonExtractBigInt>();
