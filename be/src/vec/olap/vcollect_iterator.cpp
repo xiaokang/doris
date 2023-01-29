@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include "vec/common/sort/heap_sorter.h"
 #include "vec/olap/vcollect_iterator.h"
 
 #include "common/status.h"
@@ -56,8 +57,17 @@ void VCollectIterator::init(TabletReader* reader, bool ori_data_overlapping, boo
     } else if (force_merge) {
         _merge = true;
     }
+
     _is_reverse = is_reverse;
-    _topn_limit = reader->_reader_context.read_orderby_key_limit;
+    // use topn_next opt only for DUP_KEYS and UNIQUE_KEYS with MOW
+    if (_reader->_reader_context.read_orderby_key_limit > 0 &&
+        (_reader->_tablet->keys_type() == KeysType::DUP_KEYS ||
+         (_reader->_tablet->keys_type() == KeysType::UNIQUE_KEYS &&
+          _reader->_tablet->enable_unique_key_merge_on_write()))) {
+        _topn_limit = _reader->_reader_context.read_orderby_key_limit;
+    } else {
+        _topn_limit = 0;
+    }
 }
 
 Status VCollectIterator::add_child(RowsetReaderSharedPtr rs_reader) {
@@ -230,24 +240,44 @@ Status VCollectIterator::topn_next(Block* block) {
         return Status::Error<END_OF_FILE>();
     }
 
-    auto cloneBlock = block->clone_without_columns();
-    MutableBlock mutable_block = vectorized::MutableBlock::build_mutable_block(&cloneBlock);
-
     size_t first_sort_column_idx = (*_reader->_reader_context.read_orderby_key_columns)[0];
-    const std::vector<uint32_t>* sort_columns =
-        _reader->_reader_context.read_orderby_key_columns;
 
-    BlockRowposComparator row_pos_comparator(&mutable_block, sort_columns,
-                                             _reader->_reader_context.read_orderby_key_reverse);
-    std::multiset<size_t, BlockRowposComparator, std::allocator<size_t>> sorted_row_pos(
-            row_pos_comparator);
+    RuntimeState* state = _reader->_reader_context.runtime_state;
+    if (!state) {
+        return Status::Error<RUNTIME_ERROR>("RuntimeState should not be nullptr in topn_next");
+    }
+    
+    TOlapScanNode* olap_scan_node = _reader->_reader_context.olap_scan_node;
+    if (!olap_scan_node) {
+        return Status::Error<RUNTIME_ERROR>("olap_scan_node should not be nullptr in topn_next");
+    }
 
+    TSortInfo sort_info = olap_scan_node->sort_info;
+    LOG(INFO) << "semi debug VCollectIterator::topn_next sort info: " << sort_info;
+    const RowDescriptor* row_desc = _reader->_reader_context.row_desc;
+    const RowDescriptor* sort_row_desc = _reader->_reader_context.sort_row_desc;
+    ObjectPool pool;
+    VSortExecExprs vsort_exec_exprs;
+    RETURN_IF_ERROR(vsort_exec_exprs.init(sort_info, &pool));
+    // TODO
+    RETURN_IF_ERROR(vsort_exec_exprs.prepare(state, *row_desc, *sort_row_desc));
+    RETURN_IF_ERROR(vsort_exec_exprs.open(state));
+
+    std::unique_ptr<HeapSorter> heap_sorter = std::make_unique<HeapSorter>(
+        vsort_exec_exprs, _topn_limit, 0, &pool,
+        sort_info.is_asc_order, sort_info.nulls_first, *row_desc);
+    // TODO
+    heap_sorter->init_profile(_reader->_reader_context.runtime_profile);
+
+    Field old_top {Field::Types::Null};
+
+    // TODO get right rs order
     if (_is_reverse) {
         std::reverse(_rs_readers.begin(), _rs_readers.end());
     }
 
     for (auto rs_reader : _rs_readers) {
-        // init will prune segment by _reader_context.conditions and _reader_context.runtime_conditions
+        // init will prune segment by runtime predicate generated dynamicly
         RETURN_NOT_OK(rs_reader->init(&_reader->_reader_context));
 
         // read _topn_limit rows from this rs
@@ -255,6 +285,7 @@ Status VCollectIterator::topn_next(Block* block) {
         bool eof = false;
         while (read_rows < _topn_limit && !eof) {
             block->clear_column_data();
+            // read block
             auto res = rs_reader->next_block(block);
             if (!res.ok()) {
                 if (res.is<END_OF_FILE>()) {
@@ -267,8 +298,6 @@ Status VCollectIterator::topn_next(Block* block) {
                 }
             }
 
-            auto col_name = block->get_names()[first_sort_column_idx];
-
             // filter block
             RETURN_IF_ERROR(VExprContext::filter_block(
                     *(_reader->_reader_context.filter_block_vconjunct_ctx_ptr), block,
@@ -277,97 +306,31 @@ Status VCollectIterator::topn_next(Block* block) {
             // update read rows
             read_rows += block->rows();
 
-            // insert block rows to mutable_block and adjust sorted_row_pos
-            bool changed = false;
+            // sort topn
+            RETURN_IF_ERROR(heap_sorter->append_block(block));
 
-            size_t rows_to_copy = 0;
-            if (sorted_row_pos.empty()) {
-                rows_to_copy = std::min(block->rows(), _topn_limit);
-            } else {
-                // _is_reverse == true  last_row_pos is the pos of smallest row
-                // _is_reverse == false last_row_pos is biggest row
-                size_t last_row_pos = *sorted_row_pos.rbegin();
-
-                // find the how many rows which is less than the last row in mutable_block
-                for (size_t i = 0; i < block->rows(); i++) {
-                    // if there is not enough rows in sorted_row_pos, just copy new rows
-                    if (sorted_row_pos.size() + rows_to_copy < _topn_limit) {
-                        rows_to_copy++;
-                        continue;
-                    }
-
-                    DCHECK_GE(block->columns(), sort_columns->size());
-                    DCHECK_GE(mutable_block.columns(), sort_columns->size());
-
-                    int res = 0;
-                    for (auto j : *sort_columns) {
-                        DCHECK(block->get_by_position(j)
-                                    .type->equals(*mutable_block.get_datatype_by_position(j)));
-                        res = block->get_by_position(j)
-                                    .column->compare_at(j, last_row_pos,
-                                                        *(mutable_block.get_column_by_position(j)),
-                                                        0);
-                        if (res) {
-                            break;
-                        }
-                    }
-
-                    // only copy needed rows
-                    // _is_reverse == true  > smallest is ok
-                    // _is_reverse == false < biggest is ok
-                    if ((_is_reverse && res > 0) || (!_is_reverse && res < 0)) {
-                        rows_to_copy++;
-                    } else {
-                        break;
-                    }
+            if (_reader->_reader_context.use_topn_opt) {
+                // update runtime_predicate
+                Field new_top = heap_sorter->get_top_value();
+                if (!new_top.is_null() && new_top != old_top) {
+                    auto col_name = block->get_names()[first_sort_column_idx];
+                    // update orderby_extrems in query global context
+                    auto query_ctx = state->get_query_fragments_ctx();
+                    RETURN_IF_ERROR(
+                            query_ctx->get_runtime_predicate().update(new_top, col_name, _is_reverse));
+                    old_top = std::move(new_top);
                 }
-            }
-
-            if (rows_to_copy > 0) {
-                // create column that is not in mutable_block but in block
-                for (size_t i = mutable_block.columns(); i < block->columns(); ++i) {
-                    auto col = block->get_by_position(i).clone_empty();
-                    mutable_block.mutable_columns().push_back(col.column->assume_mutable());
-                    mutable_block.data_types().push_back(std::move(col.type));
-                    mutable_block.get_names().push_back(std::move(col.name));
-                }
-
-                size_t base = mutable_block.rows();
-                mutable_block.add_rows(block, 0, rows_to_copy);
-                for (size_t i = 0; i < rows_to_copy; i++) {
-                    sorted_row_pos.insert(base + i);
-                    changed = true;
-                }
-            }
-
-            // delete to keep _topn_limit row pos
-            if (sorted_row_pos.size() > _topn_limit) {
-                auto first = sorted_row_pos.begin();
-                for (size_t i = 0; i < _topn_limit; i++) {
-                    first++;
-                }
-                sorted_row_pos.erase(first, sorted_row_pos.end());
-            }
-
-            // update runtime_predicate
-            if (changed && sorted_row_pos.size() >= _topn_limit) {
-                // get field value from column
-                size_t last_sorted_row = *sorted_row_pos.rbegin();
-                auto col_ptr = mutable_block.get_column_by_position(first_sort_column_idx).get();
-                Field new_top;
-                col_ptr->get(last_sorted_row, new_top);
-
-                // update orderby_extrems in query global context
-                auto query_ctx = _reader->_reader_context.runtime_state->get_query_fragments_ctx();
-                RETURN_IF_ERROR(
-                        query_ctx->get_runtime_predicate().update(new_top, col_name, _is_reverse));
             }
         } // end of while (read_rows < _topn_limit && !eof)
     }     // end of for (auto rs_reader : _rs_readers)
 
-    // copy result_block to block
-    // TODO only copy limit rows
-    *block = mutable_block.to_block();
+     // copy result_block to block
+    RETURN_IF_ERROR(heap_sorter->prepare_for_read());
+    bool eos = false;
+    RETURN_IF_ERROR(heap_sorter->get_next(state, block, &eos));
+
+    vsort_exec_exprs.close(state);
+    heap_sorter = nullptr;
 
     _topn_eof = true;
     return block->rows() > 0 ? Status::OK() : Status::Error<END_OF_FILE>();

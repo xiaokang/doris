@@ -328,8 +328,13 @@ Status NewOlapScanner::_init_tablet_reader_params(
 
     if (!_state->skip_storage_engine_merge()) {
         TOlapScanNode& olap_scan_node = ((NewOlapScanNode*)_parent)->_olap_scan_node;
-        bool use_topn_opt = ((NewOlapScanNode*)_parent)->_olap_scan_node.use_topn_opt;
-        if (use_topn_opt && olap_scan_node.__isset.sort_info &&
+        
+        // runtime predicate push down optimization for topn
+        _tablet_reader_params.use_topn_opt =
+            ((NewOlapScanNode*)_parent)->_olap_scan_node.use_topn_opt;
+        
+        // sort push down optimization for key topn
+        if (olap_scan_node.__isset.sort_info &&
             olap_scan_node.sort_info.is_asc_order.size() > 0) {
             _limit = _parent->_limit_per_scanner;
             _tablet_reader_params.read_orderby_key = true;
@@ -340,9 +345,11 @@ Status NewOlapScanner::_init_tablet_reader_params(
                     olap_scan_node.sort_info.is_asc_order.size();
             _tablet_reader_params.read_orderby_key_limit = _limit;
             _tablet_reader_params.filter_block_vconjunct_ctx_ptr = &_vconjunct_ctx;
+            _tablet_reader_params.olap_scan_node = &olap_scan_node;
+            _tablet_reader_params.row_desc = &_parent->row_desc();
+            _tablet_reader_params.sort_row_desc = ((NewOlapScanNode*)_parent)->sort_row_desc();
+            _tablet_reader_params.runtime_profile = _parent->runtime_profile();
         }
-
-        _tablet_reader_params.use_topn_opt = use_topn_opt;
     }
 
     return Status::OK();

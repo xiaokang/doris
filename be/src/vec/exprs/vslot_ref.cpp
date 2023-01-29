@@ -20,6 +20,7 @@
 #include <fmt/format.h>
 
 #include "runtime/descriptors.h"
+#include "util/stack_util.h"
 
 namespace doris::vectorized {
 
@@ -57,8 +58,11 @@ Status VSlotRef::prepare(doris::RuntimeState* state, const doris::RowDescriptor&
         return Status::OK();
     }
     _column_id = desc.get_column_id(_slot_id);
+    LOG(INFO) << "semi debug _slot_id: " << _slot_id << " _column_id: " << _column_id
+              << " slot_desc: " << slot_desc->debug_string()
+              << " row_desc: " << desc.debug_string(); // << " stacktrace:\n" << get_stack_trace();
     if (_column_id < 0) {
-        LOG(INFO) << "VSlotRef - invalid slot id: " << _slot_id << " desc:" << desc.debug_string();
+        LOG(WARNING) << "VSlotRef - invalid slot id: " << _slot_id << " desc:" << desc.debug_string();
         return Status::InternalError("VSlotRef - invalid slot id {}", _slot_id);
     }
     return Status::OK();

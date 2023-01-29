@@ -419,6 +419,8 @@ public class OriginalPlanner extends Planner {
             }
             scanNode.setSortInfo(sortNode.getSortInfo());
             scanNode.getSortInfo().setSortTupleSlotExprs(sortNode.resolvedTupleExprs);
+            scanNode.setSortTupleIds(sortNode.getTupleIds());
+            scanNode.setSortNullableTupleIds(sortNode.getNullableTupleIds());
         }
     }
 

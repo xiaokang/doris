@@ -32,8 +32,10 @@ NewOlapScanNode::NewOlapScanNode(ObjectPool* pool, const TPlanNode& tnode,
                                  const DescriptorTbl& descs)
         : VScanNode(pool, tnode, descs), _olap_scan_node(tnode.olap_scan_node) {
     _output_tuple_id = tnode.olap_scan_node.tuple_id;
-    if (_olap_scan_node.__isset.sort_info && _olap_scan_node.__isset.sort_limit) {
+    if (_olap_scan_node.__isset.sort_info && _olap_scan_node.__isset.sort_limit > 0) {
         _limit_per_scanner = _olap_scan_node.sort_limit;
+        _sort_row_descriptor = std::make_unique<RowDescriptor>(descs,
+            tnode.olap_scan_node.sort_row_tuples, tnode.olap_scan_node.sort_nullable_tuples);
     }
 }
 

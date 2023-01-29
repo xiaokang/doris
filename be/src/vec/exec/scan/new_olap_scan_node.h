@@ -39,6 +39,8 @@ public:
 
     std::string get_name() override;
 
+    const RowDescriptor* sort_row_desc() { return _sort_row_descriptor.get(); }
+
 protected:
     Status _init_profile() override;
     Status _process_conjuncts() override;
@@ -68,6 +70,9 @@ private:
     // _compound_filters store conditions in the one compound relationship in conjunct expr tree except leaf node of `and` node,
     // such as: "(a or b) and (c or d)", conditions for a,b,c,d will be stored
     std::vector<TCondition> _compound_filters;
+    
+    // for key topn scanner sort
+    std::unique_ptr<RowDescriptor> _sort_row_descriptor;
 
 private:
     std::unique_ptr<RuntimeProfile> _segment_profile;

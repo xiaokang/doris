@@ -47,6 +47,13 @@ struct RowsetReaderContext {
     size_t read_orderby_key_limit = 0;
     // filter_block arguments
     vectorized::VExprContext** filter_block_vconjunct_ctx_ptr = nullptr;
+    // olap scan node
+    TOlapScanNode* olap_scan_node = nullptr;
+    // olap scan node RowDescriptor
+    const RowDescriptor* row_desc = nullptr;
+    const RowDescriptor* sort_row_desc = nullptr;
+    // olap scan node RuntimeProfile
+    RuntimeProfile* runtime_profile = nullptr;
     // projection columns: the set of columns rowset reader should return
     const std::vector<uint32_t>* return_columns = nullptr;
     TPushAggOp::type push_down_agg_type_opt = TPushAggOp::NONE;

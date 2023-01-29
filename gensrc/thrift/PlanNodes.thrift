@@ -570,6 +570,8 @@ struct TOlapScanNode {
   11: optional bool enable_unique_key_merge_on_write
   12: optional TPushAggOp push_down_agg_type_opt
   13: optional bool use_topn_opt
+  14: required list<Types.TTupleId> sort_row_tuples
+  15: required list<bool> sort_nullable_tuples
 }
 
 struct TEqJoinCondition {

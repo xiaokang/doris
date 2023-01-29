@@ -157,6 +157,10 @@ public class OlapScanNode extends ScanNode {
     // It's limit for scanner instead of scanNode so we add a new limit.
     private long sortLimit = -1;
 
+    // push down sort tuple ids
+    private ArrayList<TupleId> sortTupleIds;
+    private Set<TupleId> sortNullableTupleIds;
+
     private boolean useTopnOpt = false;
 
     private TPushAggOp pushDownAggNoGroupingOp = null;
@@ -251,6 +255,18 @@ public class OlapScanNode extends ScanNode {
 
     public void setSortLimit(long sortLimit) {
         this.sortLimit = sortLimit;
+    }
+
+    public ArrayList<TupleId> getSortTupleIds() {
+        return sortTupleIds;
+    }
+
+    public void setSortTupleIds(ArrayList<TupleId> sortTupleIds) {
+        this.sortTupleIds = sortTupleIds;
+    }
+
+    public void setSortNullableTupleIds(Set<TupleId> sortNullableTupleIds) {
+        this.sortNullableTupleIds = sortNullableTupleIds;
     }
 
     public boolean getUseTopnOpt() {
@@ -898,6 +914,10 @@ public class OlapScanNode extends ScanNode {
      * Check Parent sort node can push down to child olap scan.
      */
     public boolean checkPushSort(SortNode sortNode) {
+        // if (!isDupKeysOrMergeOnWrite()) {
+        //     return false;
+        // }
+
         // Ensure all isAscOrder is same, ande length != 0.
         // Can't be zorder.
         if (sortNode.getSortInfo().getIsAscOrder().stream().distinct().count() != 1
@@ -980,6 +1000,9 @@ public class OlapScanNode extends ScanNode {
                 output.append(prefix).append("OPT TWO PHASE\n");
             }
         }
+        if (sortTupleIds != null) {
+            output.append(prefix).append("SORT TUPLES: ").append(sortTupleIds);
+        }
         if (sortLimit != -1) {
             output.append(prefix).append("SORT LIMIT: ").append(sortLimit).append("\n");
         }
@@ -1039,7 +1062,8 @@ public class OlapScanNode extends ScanNode {
         }
 
         msg.node_type = TPlanNodeType.OLAP_SCAN_NODE;
-        msg.olap_scan_node = new TOlapScanNode(desc.getId().asInt(), keyColumnNames, keyColumnTypes, isPreAggregation);
+        msg.olap_scan_node = new TOlapScanNode(desc.getId().asInt(), keyColumnNames, keyColumnTypes, isPreAggregation,
+                new ArrayList<Integer>(), new ArrayList<Boolean>());
         msg.olap_scan_node.setColumnsDesc(columnsDesc);
         if (null != sortColumn) {
             msg.olap_scan_node.setSortColumn(sortColumn);
@@ -1053,6 +1077,12 @@ public class OlapScanNode extends ScanNode {
                 tSortInfo.setSortTupleSlotExprs(Expr.treesToThrift(sortInfo.getSortTupleSlotExprs()));
             }
             msg.olap_scan_node.setSortInfo(tSortInfo);
+        }
+        if (sortTupleIds != null) {
+            for (TupleId tid : sortTupleIds) {
+                msg.olap_scan_node.addToSortRowTuples(tid.asInt());
+                msg.olap_scan_node.addToSortNullableTuples(sortNullableTupleIds.contains(tid));
+            }
         }
         if (sortLimit != -1) {
             msg.olap_scan_node.setSortLimit(sortLimit);
