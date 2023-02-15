@@ -127,6 +127,7 @@ Status VExpr::create_expr(doris::ObjectPool* pool, const doris::TExprNode& texpr
     }
     case TExprNodeType::MAP_LITERAL: {
         *expr = pool->add(new VMapLiteral(texpr_node));
+        return Status::OK();
     }
     case TExprNodeType::STRUCT_LITERAL: {
         *expr = pool->add(new VStructLiteral(texpr_node));
@@ -367,6 +368,15 @@ FunctionContext::TypeDesc VExpr::column_type_to_type_desc(const TypeDescriptor& 
         break;
     case TYPE_ARRAY:
         out.type = FunctionContext::TYPE_ARRAY;
+        for (const auto& t : type.children) {
+            out.children.push_back(VExpr::column_type_to_type_desc(t));
+        }
+        break;
+    case TYPE_MAP:
+        CHECK(type.children.size() == 2);
+        // only support map key is scalar
+        CHECK(!type.children[0].is_complex_type());
+        out.type = FunctionContext::TYPE_MAP;
         for (const auto& t : type.children) {
             out.children.push_back(VExpr::column_type_to_type_desc(t));
         }
