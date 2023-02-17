@@ -60,6 +60,17 @@ visible_functions = [
     [['bitnot'], 'BIGINT', ['BIGINT'], ''],
     [['bitnot'], 'LARGEINT', ['LARGEINT'], ''],
 
+    # map functions
+    [['map'], 'MAP', ['STRING', 'INT', '...'], 'ALWAYS_NOT_NULLABLE'],
+    [['element_at', '%element_extract%'], 'INT', ['MAP_STRING_INT', 'STRING'], 'ALWAYS_NULLABLE'],
+    [['size', 'map_size'], 'BIGINT', ['MAP_STRING_INT'], ''],
+    [['map_contains_key'], 'BOOLEAN', ['MAP_STRING_INT', 'STRING'], ''],
+    [['map_contains_value'], 'BOOLEAN', ['MAP_STRING_INT', 'INT'], ''],
+    [['map_contains_key_like'], 'BOOLEAN', ['MAP_STRING_INT', 'STRING'], ''],
+    [['map_keys'], 'ARRAY_STRING', ['MAP_STRING_INT'], ''],
+    [['map_values'], 'ARRAY_INT', ['MAP_STRING_INT'], ''],
+    # [['map_entries'], 'MAP_STRING_INT', ['MAP_STRING_INT'], ''],
+
     # array functions
     [['array'], 'ARRAY', ['BOOLEAN', '...'], 'ALWAYS_NOT_NULLABLE'],
     [['array'], 'ARRAY', ['TINYINT', '...'], 'ALWAYS_NOT_NULLABLE'],
@@ -98,9 +109,6 @@ visible_functions = [
     [['element_at', '%element_extract%'], 'DECIMAL128', ['ARRAY_DECIMAL128', 'BIGINT'], 'ALWAYS_NULLABLE'],
     [['element_at', '%element_extract%'], 'VARCHAR', ['ARRAY_VARCHAR', 'BIGINT'], 'ALWAYS_NULLABLE'],
     [['element_at', '%element_extract%'], 'STRING', ['ARRAY_STRING', 'BIGINT'], 'ALWAYS_NULLABLE'],
-
-    # map element
-    [['element_at', '%element_extract%'], 'INT', ['MAP_STRING_INT', 'STRING'], 'ALWAYS_NULLABLE'],
 
     [['arrays_overlap'], 'BOOLEAN', ['ARRAY_BOOLEAN', 'ARRAY_BOOLEAN'], 'ALWAYS_NULLABLE'],
     [['arrays_overlap'], 'BOOLEAN', ['ARRAY_TINYINT', 'ARRAY_TINYINT'], 'ALWAYS_NULLABLE'],

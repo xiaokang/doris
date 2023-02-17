@@ -134,6 +134,10 @@ public:
     const IColumn& get_values() const { return *values; }
     IColumn& get_values() { return *values; }
 
+    size_t ALWAYS_INLINE size_at(ssize_t i) const {
+        return get_offsets()[i] - get_offsets()[i - 1];
+    }
+
 private:
     friend class COWHelper<IColumn, ColumnMap>;
 
@@ -141,9 +145,6 @@ private:
     WrappedPtr values; // nullable
 
     size_t ALWAYS_INLINE offset_at(ssize_t i) const { return get_offsets()[i - 1]; }
-    size_t ALWAYS_INLINE size_at(ssize_t i) const {
-        return get_offsets()[i] - get_offsets()[i - 1];
-    }
 
     explicit ColumnMap(MutableColumnPtr&& keys, MutableColumnPtr&& values);
 
