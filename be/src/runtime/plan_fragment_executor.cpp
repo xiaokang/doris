@@ -513,6 +513,11 @@ void PlanFragmentExecutor::close() {
             }
         }
 
+        LOG(WARNING) << "PROFILE EVERYTIME";
+        std::stringstream ss;
+        _runtime_state->runtime_profile()->compute_time_in_profile();
+        _runtime_state->runtime_profile()->pretty_print(&ss);
+        LOG(INFO) << ss.str();
         if (_is_report_success) {
             std::stringstream ss;
             // Compute the _local_time_percent before pretty_print the runtime_profile

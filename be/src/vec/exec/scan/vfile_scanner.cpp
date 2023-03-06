@@ -85,7 +85,7 @@ Status VFileScanner::prepare(
     }
 
     if (_is_load) {
-        _src_block_mem_reuse = true;
+        _src_block_mem_reuse = false;
         _src_row_desc.reset(new RowDescriptor(_state->desc_tbl(),
                                               std::vector<TupleId>({_input_tuple_desc->id()}),
                                               std::vector<bool>({false})));
@@ -240,7 +240,8 @@ Status VFileScanner::_init_src_block(Block* block) {
             data_type =
                     DataTypeFactory::instance().create_data_type(slot->type(), slot->is_nullable());
         } else {
-            data_type = DataTypeFactory::instance().create_data_type(it->second, true);
+            data_type =
+                    DataTypeFactory::instance().create_data_type(it->second, slot->is_nullable());
         }
         if (data_type == nullptr) {
             return Status::NotSupported("Not support data type {} for column {}",
@@ -450,8 +451,10 @@ Status VFileScanner::_convert_to_output_block(Block* block) {
         // column_ptr maybe a ColumnConst, convert it to a normal column
         column_ptr = column_ptr->convert_to_full_column_if_const();
 
+        if (!slot_desc->is_nullable()) {
+            column_ptr = remove_nullable(column_ptr);
+        }
         DCHECK(column_ptr != nullptr);
-
         // because of src_slot_desc is always be nullable, so the column_ptr after do dest_expr
         // is likely to be nullable
         if (LIKELY(column_ptr->is_nullable())) {

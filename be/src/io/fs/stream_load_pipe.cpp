@@ -68,7 +68,9 @@ Status StreamLoadPipe::read_at(size_t /*offset*/, Slice result, const IOContext&
         }
         auto buf = _buf_queue.front();
         int64_t copy_size = std::min(bytes_req - *bytes_read, buf->remaining());
+        l.unlock();
         buf->get_bytes(to + *bytes_read, copy_size);
+        l.lock();
         *bytes_read += copy_size;
         if (!buf->has_remaining()) {
             _buf_queue.pop_front();

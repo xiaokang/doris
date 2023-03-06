@@ -18,6 +18,7 @@
 #include "vec/exec/format/json/new_json_reader.h"
 
 #include "common/compiler_util.h"
+#include "util/defer_op.h"
 #include "exprs/json_functions.h"
 #include "io/file_factory.h"
 #include "io/fs/stream_load_pipe.h"
@@ -1337,7 +1338,7 @@ Status NewJsonReader::_simdjson_set_column_value(simdjson::ondemand::object* val
                                                  bool* valid) {
     // set
     _seen_columns.assign(columns.size(), false);
-    size_t cur_row_count = columns[0]->size();
+    [[maybe_unused]] size_t cur_row_count = columns[0]->size();
     bool has_valid_value = false;
     // iterate through object, simdjson::ondemond will parsing on the fly
     size_t key_index = 0;
@@ -1365,22 +1366,11 @@ Status NewJsonReader::_simdjson_set_column_value(simdjson::ondemand::object* val
     }
 
     // fill missing slot
-    int nullcount = 0;
+    [[maybe_unused]] int nullcount = 0;
     for (size_t i = 0; i < slot_descs.size(); ++i) {
-        if (_seen_columns[i]) {
-            continue;
+        if (UNLIKELY(!_seen_columns[i])) {
+            columns[i]->insert_default();
         }
-        auto slot_desc = slot_descs[i];
-        if (!slot_desc->is_materialized()) {
-            continue;
-        }
-        auto* column_ptr = columns[i].get();
-        if (column_ptr->size() < cur_row_count + 1) {
-            DCHECK(column_ptr->size() == cur_row_count);
-            column_ptr->assume_mutable()->insert_default();
-            ++nullcount;
-        }
-        DCHECK(column_ptr->size() == cur_row_count + 1);
     }
 
 #ifndef NDEBUG
@@ -1400,17 +1390,24 @@ Status NewJsonReader::_simdjson_write_data_to_column(simdjson::ondemand::value& 
                                                      vectorized::IColumn* column, bool* valid) {
     // write
     vectorized::ColumnNullable* nullable_column = nullptr;
-    vectorized::IColumn* column_ptr = nullptr;
-    if (slot_desc->is_nullable()) {
+    vectorized::IColumn* column_ptr = column;
+    bool is_nullable = slot_desc->is_nullable();
+    if (is_nullable) {
         nullable_column = assert_cast<vectorized::ColumnNullable*>(column);
         column_ptr = &nullable_column->get_nested_column();
     }
+    Defer __defer([&valid, is_nullable, nullable_column]() {
+        if (*valid && is_nullable) {
+            nullable_column->get_null_map_data().push_back(0);
+        }
+    });
     // TODO: if the vexpr can support another 'slot_desc type' than 'TYPE_VARCHAR',
     // we need use a function to support these types to insert data in columns.
     ColumnString* column_string = assert_cast<ColumnString*>(column_ptr);
-    switch (value.type()) {
-    case simdjson::ondemand::json_type::null: {
-        if (column->is_nullable()) {
+    column_string->get_chars().reserve(1024 * 512);
+    simdjson::ondemand::json_type value_type = value.type();
+    if (UNLIKELY(value_type == simdjson::ondemand::json_type::null)) {
+        if (is_nullable) {
             // insert_default already push 1 to null_map
             nullable_column->insert_default();
         } else {
@@ -1419,29 +1416,28 @@ Status NewJsonReader::_simdjson_write_data_to_column(simdjson::ondemand::value& 
                     slot_desc->col_name(), valid));
             return Status::OK();
         }
-        break;
+        *valid = true;
+        return Status::OK();
     }
-    case simdjson::ondemand::json_type::boolean: {
-        nullable_column->get_null_map_data().push_back(0);
+    if (UNLIKELY(value_type == simdjson::ondemand::json_type::boolean)) {
         if (value.get_bool()) {
             column_string->insert_data("1", 1);
         } else {
             column_string->insert_data("0", 1);
         }
-        break;
+        *valid = true;
+        return Status::OK();
     }
-    default: {
-        auto str_view = simdjson::to_json_string(value).value();
-        if (value.type() == simdjson::ondemand::json_type::string) {
-            nullable_column->get_null_map_data().push_back(0);
-            // trim
-            column_string->insert_data(str_view.data() + 1, str_view.length() - 2);
-            break;
-        }
-        nullable_column->get_null_map_data().push_back(0);
+    if (value.type() == simdjson::ondemand::json_type::string) {
+        std::string_view str_view = value.get_string();
+        // trim
         column_string->insert_data(str_view.data(), str_view.length());
+        *valid = true;
+        return Status::OK();
     }
-    }
+    // Other types like array, object ...
+    std::string_view str_view = simdjson::to_json_string(value);
+    column_string->insert_data(str_view.data(), str_view.length());
     *valid = true;
     return Status::OK();
 }

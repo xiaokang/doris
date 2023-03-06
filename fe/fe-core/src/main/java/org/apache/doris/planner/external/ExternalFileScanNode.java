@@ -612,6 +612,7 @@ public class ExternalFileScanNode extends ExternalScanNode {
                 expr.analyze(analyzer);
             } else {
                 expr = castToSlot(destSlotDesc, expr);
+                LOG.debug("ExprOfDestSlot {}", expr.toSql());
             }
             params.putToExprOfDestSlot(destSlotDesc.getId().asInt(), expr.treeToThrift());
         }
