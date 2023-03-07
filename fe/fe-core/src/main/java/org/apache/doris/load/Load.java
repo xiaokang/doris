@@ -738,7 +738,11 @@ public class Load {
                         // because src slot is what we read from file, not represent to real column value.
                         // If column is not nullable, error will be thrown when filling the dest slot,
                         // which is not nullable.
-                        slotDesc.setIsNullable(tblColumn.isAllowNull());
+                        if (formatType == TFileFormatType.FORMAT_JSON) {
+                            slotDesc.setIsNullable(tblColumn.isAllowNull());
+                        } else {
+                            slotDesc.setIsNullable(true);
+                        }
                     }
                 }
                 slotDesc.setIsMaterialized(true);
