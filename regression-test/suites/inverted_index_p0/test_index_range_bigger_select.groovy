@@ -17,6 +17,9 @@
 
 
 suite("test_index_range_bigger_select", "inverted_index_select"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     def indexTbName1 = "index_range_bigger_select"
 
     sql "DROP TABLE IF EXISTS ${indexTbName1}"

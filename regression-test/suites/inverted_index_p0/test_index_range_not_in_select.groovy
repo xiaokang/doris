@@ -17,6 +17,9 @@
 
 
 suite("test_index_range_not_in_select", "inverted_index_select"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     def varchar_colume1 = "name"
     def varchar_colume2 = "grade"
     def varchar_colume3 = "fatherName"

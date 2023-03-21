@@ -16,6 +16,9 @@
 // under the License.
 
 suite("test_index_equal_select", "inverted_index_select"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     
     def indexTbName1 = "index_equal_select"
 

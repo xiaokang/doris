@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 suite("test_bitmap_index", "inverted_index") {
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     def tbName1 = "test_bitmap_index_dup"
 
     def getJobState = { tableName ->

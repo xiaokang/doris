@@ -17,6 +17,9 @@
 
 
 suite("test_bkd_null_index", "inverted_index"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     // prepare test table
 
 

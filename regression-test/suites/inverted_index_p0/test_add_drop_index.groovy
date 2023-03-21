@@ -17,6 +17,9 @@
 
 
 suite("test_add_drop_index", "inverted_index"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     // prepare test table
     def timeout = 60000
     def delta_time = 1000
