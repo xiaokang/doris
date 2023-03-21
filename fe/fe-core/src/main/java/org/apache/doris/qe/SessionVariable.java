@@ -291,6 +291,8 @@ public class SessionVariable implements Serializable, Writable {
 
     public static final String DRY_RUN_QUERY = "dry_run_query";
 
+    public static final String USE_FUZZY_ADD_INVERTED_INDEX = "use_fuzzy_add_inverted_index";
+
     public static final List<String> DEBUG_VARIABLES = ImmutableList.of(
             SKIP_DELETE_PREDICATE,
             SKIP_DELETE_BITMAP,
@@ -782,6 +784,10 @@ public class SessionVariable implements Serializable, Writable {
     // If set to true, all query will be executed without returning result
     @VariableMgr.VarAttr(name = DRY_RUN_QUERY, needForward = true)
     public boolean dryRunQuery = false;
+
+    // If set to true, automatically add inverted index for each create table
+    @VariableMgr.VarAttr(name = USE_FUZZY_ADD_INVERTED_INDEX)
+    public boolean useFuzzyAddInvertedIndex = false;
 
     // If this fe is in fuzzy mode, then will use initFuzzyModeVariables to generate some variables,
     // not the default value set in the code.

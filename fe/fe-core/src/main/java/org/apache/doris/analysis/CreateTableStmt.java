@@ -190,6 +190,51 @@ public class CreateTableStmt extends DdlStmt {
         this.keysDesc = keysDesc;
         this.partitionDesc = partitionDesc;
         this.distributionDesc = distributionDesc;
+
+        // for test inverted index
+        if (ConnectContext.get() != null && ConnectContext.get().getSessionVariable() != null
+                && ConnectContext.get().getSessionVariable().useFuzzyAddInvertedIndex
+                && this.engineName.toLowerCase().equals("olap")
+                    && (keysDesc == null
+                            || (keysDesc.getKeysType() == KeysType.DUP_KEYS
+                                    || (keysDesc.getKeysType() == KeysType.UNIQUE_KEYS
+                                        && properties.getOrDefault("enable_unique_key_merge_on_write",
+                                            "false").equals("true"))))) {
+            if (this.indexDefs == null) {
+                this.indexDefs = Lists.newArrayList();
+            }
+            for (ColumnDef columnDef : columnDefs) {
+                if (!(columnDef.getType().isStringType()
+                        || columnDef.getType().isNumericType()
+                        || columnDef.getType().isDateType())
+                            || columnDef.getType().isFloatingPointType()) {
+                    continue;
+                }
+
+                if (columnDef.getAggregateType() != null
+                        && columnDef.getAggregateType() != AggregateType.NONE) {
+                    continue;
+                }
+
+                boolean exists = false;
+                for (IndexDef indexDef : this.indexDefs) {
+                    for (String indexColumnName : indexDef.getColumns()) {
+                        if (indexColumnName.toLowerCase().equals(
+                                columnDef.getName().toLowerCase())) {
+                            exists = true;
+                        }
+                    }
+                }
+                if (!exists) {
+                    IndexDef autoIndex = new IndexDef("auto_idx_" + columnDef.getName(), true,
+                            Lists.newArrayList(columnDef.getName()), IndexDef.IndexType.INVERTED,
+                            null, "auto added inverted index for " + columnDef.getName());
+                    LOG.info("use_fuzzy_add_inverted_index " + autoIndex + " for table " + tableName);
+                    this.indexDefs.add(autoIndex);
+                }
+            }
+        }
+
         if (isDynamicSchema) {
             if (properties == null) {
                 properties = Maps.newHashMap();
