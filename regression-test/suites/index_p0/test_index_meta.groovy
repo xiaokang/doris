@@ -19,6 +19,9 @@ import groovy.json.JsonOutput
 import org.codehaus.groovy.runtime.IOGroovyMethods
 
 suite("index_meta", "p0") {
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     // prepare test table
     def timeout = 120000
     def delta_time = 1000

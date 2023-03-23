@@ -16,6 +16,9 @@
 // under the License.
 
 suite("test_dynamic_table", "dynamic_table"){
+    // diable use_fuzzy_add_inverted_index for inverted index test case
+    sql "SET use_fuzzy_add_inverted_index = false"
+
     // prepare test table
     def load_json_data = {table_name, vec_flag, format_flag, read_flag, file_name, expect_success ->
         // load the json data
