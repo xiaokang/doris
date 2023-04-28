@@ -363,6 +363,7 @@ CONF_mInt32(cumulative_compaction_rounds_for_each_base_compaction_round, "9");
 // Threshold to logging compaction trace, in seconds.
 CONF_mInt32(base_compaction_trace_threshold, "60");
 CONF_mInt32(cumulative_compaction_trace_threshold, "10");
+CONF_mBool(enable_level_cumulative_compaction, "true");
 CONF_mBool(disable_compaction_trace_log, "true");
 
 // Thread count to do tablet meta checkpoint, -1 means use the data directories count.
