@@ -957,6 +957,10 @@ CONF_Int32(max_depth_of_expr_tree, "600");
 // Report a tablet as bad when io errors occurs more than this value.
 CONF_mInt64(max_tablet_io_errors, "-1");
 
+CONF_Bool(skip_compression_for_load, "false");
+CONF_Bool(skip_inverted_index_for_load, "false");
+CONF_Bool(skip_fulltext_index_for_load, "false");
+
 CONF_Int64(pick_rowset_to_compact_interval, "600");
 
 // Page size of row column, default 4KB
