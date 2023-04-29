@@ -961,7 +961,7 @@ CONF_Bool(skip_compression_for_load, "false");
 CONF_Bool(skip_inverted_index_for_load, "false");
 CONF_Bool(skip_fulltext_index_for_load, "false");
 
-CONF_Int64(pick_rowset_to_compact_interval, "600");
+CONF_Int64(pick_rowset_to_compact_interval, "3600000");
 
 // Page size of row column, default 4KB
 CONF_mInt64(row_column_page_size, "4096");
