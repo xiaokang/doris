@@ -50,6 +50,11 @@ Status BaseCompaction::prepare_compact() {
 }
 
 Status BaseCompaction::execute_compact_impl() {
+    if (config::disable_base_compaction) {
+        LOG(INFO) << "skip base compaction for tablet " << _tablet->full_name();
+        return Status::OK();
+    }
+
 #ifndef __APPLE__
     if (config::enable_base_compaction_idle_sched) {
         Thread::set_idle_sched();

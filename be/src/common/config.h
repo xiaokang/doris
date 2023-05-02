@@ -309,6 +309,7 @@ CONF_mInt32(ordered_data_compaction_min_segment_size, "10485760");
 CONF_mInt32(max_base_compaction_threads, "4");
 CONF_mInt32(max_cumu_compaction_threads, "10");
 
+CONF_Bool(disable_base_compaction, "false");
 CONF_Bool(enable_base_compaction_idle_sched, "true");
 CONF_mInt64(base_compaction_min_rowset_num, "5");
 CONF_mDouble(base_compaction_min_data_ratio, "0.3");
