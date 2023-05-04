@@ -299,6 +299,9 @@ struct TSnapshotRequest {
     8: optional bool allow_incremental_clone
     9: optional i32 preferred_snapshot_version = Types.TPREFER_SNAPSHOT_REQ_VERSION
     10: optional bool is_copy_tablet_task
+    11: optional bool is_compaction_clone = false
+    12: optional Types.TVersion compaction_clone_start_version
+    13: optional Types.TVersion compaction_clone_end_version
 }
 
 struct TReleaseSnapshotRequest {

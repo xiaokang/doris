@@ -38,6 +38,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "runtime/thread_context.h"
 #include "service/backend_options.h"
+#include "util/brpc_client_cache.h"
 #include "util/doris_metrics.h"
 #include "util/histogram.h"
 #include "util/path_util.h"
@@ -679,6 +680,23 @@ TabletSharedPtr TabletManager::find_best_tablet_to_compaction(
                            << "compaction_type=" << compaction_type_str
                            << ", last_failure_time_ms=" << last_failure_ms
                            << ", tablet_id=" << tablet_ptr->tablet_id();
+                continue;
+            }
+
+            bool has_master_tablet = false;
+            {
+                if(StorageEngine::instance()->has_master(tablet_ptr->tablet_id())) {
+                    has_master_tablet = true;
+                }
+            }
+            std::vector<Version> peer_versions;
+            if (has_master_tablet) {
+                Status st = tablet_ptr->get_peer_versions(peer_versions);
+                if (!st.ok()) {
+                    continue;
+                }
+            }
+            if (has_master_tablet && (!tablet_ptr->should_fetch_from_peer(peer_versions))) {
                 continue;
             }
 

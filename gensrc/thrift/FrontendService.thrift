@@ -822,6 +822,16 @@ struct TCheckAuthResult {
     1: required Status.TStatus status
 }
 
+struct TGetTabletReplicasInfoRequest {
+    1: required list<i64> tablet_ids
+}
+
+struct TGetTabletReplicasInfoResult {
+    1: optional Status.TStatus status
+    2: optional map<i64, list<Types.TBackend>> tablet_replicas_info
+    3: optional string token
+}
+
 service FrontendService {
     TGetDbsResult getDbNames(1: TGetDbsParams params)
     TGetTablesResult getTableNames(1: TGetTablesParams params)
@@ -868,4 +878,6 @@ service FrontendService {
     TConfirmUnusedRemoteFilesResult confirmUnusedRemoteFiles(1: TConfirmUnusedRemoteFilesRequest request)
 
     TCheckAuthResult checkAuth(1: TCheckAuthRequest request)
+
+    TGetTabletReplicasInfoResult getTabletReplicasInfo(1: TGetTabletReplicasInfoRequest request)
 }

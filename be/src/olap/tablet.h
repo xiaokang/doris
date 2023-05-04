@@ -55,6 +55,7 @@ class TabletMeta;
 class CumulativeCompactionPolicy;
 class CumulativeCompaction;
 class BaseCompaction;
+class SingleReplicaCompaction;
 class RowsetWriter;
 
 struct TabletTxnInfo;
@@ -230,6 +231,12 @@ public:
     std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_cumulative_compaction();
     std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_base_compaction();
 
+
+    std::vector<RowsetSharedPtr> pick_candidate_rowsets_to_single_replica_compaction();
+    std::vector<Version> get_all_versions();
+    bool should_fetch_from_peer(std::vector<Version>& peer_versions);
+    Status get_peer_versions(std::vector<Version>& peer_versions);
+
     void calculate_cumulative_point();
     // TODO(ygl):
     bool is_primary_replica() { return false; }
@@ -260,8 +267,12 @@ public:
 
     Status prepare_compaction_and_calculate_permits(CompactionType compaction_type,
                                                     TabletSharedPtr tablet, int64_t* permits);
+
+    Status prepare_single_replica_compaction(TabletSharedPtr tablet);
     void execute_compaction(CompactionType compaction_type);
     void reset_compaction(CompactionType compaction_type);
+    void execute_single_replica_compaction();
+    void reset_single_replica_compaction();
 
     void set_clone_occurred(bool clone_occurred) { _is_clone_occurred = clone_occurred; }
     bool get_clone_occurred() { return _is_clone_occurred; }
@@ -414,6 +425,8 @@ public:
 
     bool check_all_rowset_segment();
 
+    bool calc_master_info(std::vector<TBackend> &backends, TBackend &master) const;
+
     void update_max_version_schema(const TabletSchemaSPtr& tablet_schema);
 
     void set_skip_compaction(bool skip,
@@ -544,6 +557,8 @@ private:
 
     std::shared_ptr<CumulativeCompaction> _cumulative_compaction;
     std::shared_ptr<BaseCompaction> _base_compaction;
+    std::shared_ptr<SingleReplicaCompaction> _single_replica_compaction;
+
     // whether clone task occurred during the tablet is in thread pool queue to wait for compaction
     std::atomic<bool> _is_clone_occurred;
 

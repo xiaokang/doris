@@ -34,6 +34,7 @@
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/BackendService_types.h"
 #include "gen_cpp/MasterService_types.h"
+#include <gen_cpp/internal_service.pb.h>
 #include "gutil/ref_counted.h"
 #include "olap/compaction_permit_limiter.h"
 #include "olap/olap_common.h"
@@ -59,6 +60,7 @@ class MemTableFlushExecutor;
 class Tablet;
 class TaskWorkerPool;
 class BetaRowsetWriter;
+class SingleReplicaCompaction;
 
 using SegCompactionCandidates = std::vector<segment_v2::SegmentSharedPtr>;
 using SegCompactionCandidatesSharedPtr = std::shared_ptr<SegCompactionCandidates>;
@@ -167,10 +169,33 @@ public:
 
     void stop();
 
+    void get_tablet_versions(const PGetTabletVersionsRequest* request,
+                                 PGetTabletVersionsResponse* response);
+
     void create_cumulative_compaction(TabletSharedPtr best_tablet,
                                       std::shared_ptr<CumulativeCompaction>& cumulative_compaction);
     void create_base_compaction(TabletSharedPtr best_tablet,
                                 std::shared_ptr<BaseCompaction>& base_compaction);
+
+    void create_single_replica_compaction(TabletSharedPtr best_tablet,
+                                std::shared_ptr<SingleReplicaCompaction>& single_replica_compaction);
+    bool get_tbackend(int64_t tablet_id, TBackend& tbk, std::string& token) { 
+        std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
+        if(_tablet_master_info.count(tablet_id)) {
+            tbk = _tablet_master_info[tablet_id];
+            token = _token;
+            return true;
+        }
+        return false;
+    }
+
+    bool has_master(int64_t tablet_id) {
+        std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
+        if(_tablet_master_info.count(tablet_id)) {
+            return true;
+        }
+        return false;
+    }
 
     std::shared_ptr<StreamLoadRecorder> get_stream_load_recorder() { return _stream_load_recorder; }
 
@@ -253,6 +278,8 @@ private:
 
     void _compaction_tasks_producer_callback();
 
+    void _tablet_replicas_info_update_callback();
+
     std::vector<TabletSharedPtr> _generate_compaction_tasks(CompactionType compaction_type,
                                                             std::vector<DataDir*>& data_dirs,
                                                             bool check_score);
@@ -266,6 +293,8 @@ private:
     Status _init_stream_load_recorder(const std::string& stream_load_record_path);
 
     Status _submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type);
+
+    Status _submit_single_replica_compaction_task(TabletSharedPtr tablet);
 
     void _adjust_compaction_thread_num();
 
@@ -338,6 +367,7 @@ private:
     scoped_refptr<Thread> _disk_stat_monitor_thread;
     // thread to produce both base and cumulative compaction tasks
     scoped_refptr<Thread> _compaction_tasks_producer_thread;
+    scoped_refptr<Thread> _tablet_replicas_info_update_thread;
     scoped_refptr<Thread> _fd_cache_clean_thread;
     // threads to clean all file descriptor not actively in use
     std::vector<scoped_refptr<Thread>> _path_gc_threads;
@@ -369,6 +399,7 @@ private:
 
     std::unique_ptr<ThreadPool> _base_compaction_thread_pool;
     std::unique_ptr<ThreadPool> _cumu_compaction_thread_pool;
+    std::unique_ptr<ThreadPool> _single_replica_compaction_thread_pool;
     std::unique_ptr<ThreadPool> _seg_compaction_thread_pool;
     std::unique_ptr<ThreadPool> _cold_data_compaction_thread_pool;
 
@@ -383,6 +414,10 @@ private:
     // a tablet can do base and cumulative compaction at same time
     std::map<DataDir*, std::unordered_set<TTabletId>> _tablet_submitted_cumu_compaction;
     std::map<DataDir*, std::unordered_set<TTabletId>> _tablet_submitted_base_compaction;
+
+    std::mutex _tablet_master_info_mutex;
+    std::unordered_map<int64_t, TBackend> _tablet_master_info;
+    std::string _token;
 
     std::atomic<int32_t> _wakeup_producer_flag {0};
 

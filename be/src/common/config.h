@@ -308,6 +308,7 @@ CONF_mInt32(ordered_data_compaction_min_segment_size, "10485760");
 // This config can be set to limit thread number in compaction thread pool.
 CONF_mInt32(max_base_compaction_threads, "4");
 CONF_mInt32(max_cumu_compaction_threads, "10");
+CONF_mInt32(max_single_replica_compaction_threads, "10");
 
 CONF_Bool(disable_base_compaction, "false");
 CONF_Bool(enable_base_compaction_idle_sched, "true");
@@ -348,6 +349,10 @@ CONF_mInt64(total_permits_for_compaction_score, "10000");
 
 // sleep interval in ms after generated compaction tasks
 CONF_mInt32(generate_compaction_tasks_interval_ms, "10");
+
+CONF_mInt32(tablet_replicas_info_update_interval_seconds, "2");
+CONF_mBool(enable_single_replica_compaction, "false");
+
 
 // Compaction task number per disk.
 // Must be greater than 2, because Base compaction and Cumulative compaction have at least one thread each.

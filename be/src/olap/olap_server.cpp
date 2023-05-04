@@ -27,6 +27,10 @@
 
 #include "common/config.h"
 #include "common/status.h"
+#include "gen_cpp/internal_service.pb.h"
+#include "gen_cpp/BackendService.h"
+#include "gen_cpp/FrontendService.h"
+#include "gen_cpp/Types_constants.h"
 #include "gutil/strings/substitute.h"
 #include "io/cache/file_cache_manager.h"
 #include "olap/cold_data_compaction.h"
@@ -35,7 +39,14 @@
 #include "olap/olap_define.h"
 #include "olap/rowset/beta_rowset_writer.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet_manager.h"
+#include "olap/tablet_meta.h"
+#include "olap/tablet_schema.h"
+#include "runtime/client_cache.h"
+#include "service/brpc.h"
 #include "service/point_query_executor.h"
+#include "util/brpc_client_cache.h"
+#include "util/thrift_rpc_helper.h"
 #include "util/time.h"
 
 using std::string;
@@ -81,6 +92,13 @@ Status StorageEngine::start_bg_threads() {
             .set_min_threads(config::max_cumu_compaction_threads)
             .set_max_threads(config::max_cumu_compaction_threads)
             .build(&_cumu_compaction_thread_pool);
+    if (config::enable_single_replica_compaction) {
+        ThreadPoolBuilder("SingleReplicaCompactionTaskThreadPool")
+                .set_min_threads(config::max_single_replica_compaction_threads)
+                .set_max_threads(config::max_single_replica_compaction_threads)
+                .build(&_single_replica_compaction_thread_pool);
+    }
+            
     if (config::enable_segcompaction) {
         ThreadPoolBuilder("SegCompactionTaskThreadPool")
                 .set_min_threads(config::seg_compaction_max_threads)
@@ -98,6 +116,13 @@ Status StorageEngine::start_bg_threads() {
             [this]() { this->_compaction_tasks_producer_callback(); },
             &_compaction_tasks_producer_thread));
     LOG(INFO) << "compaction tasks producer thread started";
+
+    RETURN_IF_ERROR(Thread::create(
+            "StorageEngine", "tablet_replicas_info_update_thread",
+            [this]() { this->_tablet_replicas_info_update_callback(); },
+            &_tablet_replicas_info_update_thread));
+    LOG(INFO) << "tablet replicas info update thread started";
+
     int32_t max_checkpoint_thread_num = config::max_meta_checkpoint_threads;
     if (max_checkpoint_thread_num < 0) {
         max_checkpoint_thread_num = data_dirs.size();
@@ -408,6 +433,27 @@ void StorageEngine::_adjust_compaction_thread_num() {
                         << " to " << config::max_cumu_compaction_threads;
         }
     }
+    if (config::enable_single_replica_compaction) {
+        if (_single_replica_compaction_thread_pool->max_threads() != config::max_single_replica_compaction_threads) {
+            int old_max_threads = _single_replica_compaction_thread_pool->max_threads();
+            Status status =
+                    _single_replica_compaction_thread_pool->set_max_threads(config::max_single_replica_compaction_threads);
+            if (status.ok()) {
+                VLOG_NOTICE << "update single replica compaction thread pool max_threads from " << old_max_threads
+                            << " to " << config::max_single_replica_compaction_threads;
+            }
+        }
+        if (_single_replica_compaction_thread_pool->min_threads() != config::max_single_replica_compaction_threads) {
+            int old_min_threads = _single_replica_compaction_thread_pool->min_threads();
+            Status status =
+                    _single_replica_compaction_thread_pool->set_min_threads(config::max_single_replica_compaction_threads);
+            if (status.ok()) {
+                VLOG_NOTICE << "update single replica compaction thread pool min_threads from " << old_min_threads
+                            << " to " << config::max_single_replica_compaction_threads;
+            }
+        }
+    }
+    
 }
 
 void StorageEngine::_compaction_tasks_producer_callback() {
@@ -492,6 +538,27 @@ void StorageEngine::_compaction_tasks_producer_callback() {
             /// If it is not cleaned up, the reference count of the tablet will always be greater than 1,
             /// thus cannot be collected by the garbage collector. (TabletManager::start_trash_sweep)
             for (const auto& tablet : tablets_compaction) {
+                if (config::enable_single_replica_compaction) {
+                    bool has_master_tablet = false;
+                    {
+                        std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
+                        if(_tablet_master_info.count(tablet->tablet_id())) {
+                            has_master_tablet = true;
+                        }
+                    }
+                    if (has_master_tablet) {
+                        VLOG_CRITICAL << "start to submit single replica compaction task for tablet: "
+                                 << tablet->tablet_id();
+                        Status st = _submit_single_replica_compaction_task(tablet);
+                        if (!st.ok()) {
+                            LOG(WARNING) << "failed to submit single replica compaction task for tablet: "
+                                        << tablet->tablet_id() << ", err: " << st;
+                        }
+                        continue;
+                    }
+                }
+                VLOG_CRITICAL << "start to submit compaction task for tablet: "
+                                 << tablet->tablet_id();
                 Status st = _submit_compaction_task(tablet, compaction_type);
                 if (!st.ok()) {
                     LOG(WARNING) << "failed to submit compaction task for tablet: "
@@ -503,6 +570,164 @@ void StorageEngine::_compaction_tasks_producer_callback() {
             interval = 5000; // 5s to check disable_auto_compaction
         }
     } while (!_stop_background_threads_latch.wait_for(std::chrono::milliseconds(interval)));
+}
+
+void StorageEngine::_tablet_replicas_info_update_callback() {
+#ifdef GOOGLE_PROFILER
+    ProfilerRegisterThread();
+#endif
+    LOG(INFO) << "try to start tablet replicas info update process!";
+    
+    int64_t interval = config::tablet_replicas_info_update_interval_seconds;
+    do {
+        if (config::enable_single_replica_compaction) {
+            auto all_tablets = _tablet_manager->get_all_tablet([](Tablet* t) {
+                return t->is_used() && t->tablet_state() == TABLET_RUNNING &&
+                    !t->tablet_meta()->tablet_schema()->disable_auto_compaction();
+            });
+            TMasterInfo* master_info = ExecEnv::GetInstance()->master_info();
+            if (master_info == nullptr) {
+                LOG(WARNING)<< "Have not get FE Master heartbeat yet";
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+            TNetworkAddress master_addr = master_info->network_address;
+            if (master_addr.hostname == "" || master_addr.port == 0) {
+                LOG(WARNING)<< "Have not get FE Master heartbeat yet";
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+            
+            int start = 0;
+            int tablet_size = all_tablets.size();
+            while (start < tablet_size) {
+                int batch_size = std::min(100, tablet_size - start);
+                int end = start + batch_size;
+                TGetTabletReplicasInfoRequest request;
+                TGetTabletReplicasInfoResult result;
+                for (int i = start; i < end; i++) {
+                    request.tablet_ids.emplace_back(all_tablets[i]->tablet_id());
+                }
+                Status rpc_st = ThriftRpcHelper::rpc<FrontendServiceClient>(
+                    master_addr.hostname, master_addr.port,
+                    [&request, &result](FrontendServiceConnection& client) {
+                        client->getTabletReplicasInfo(result, request);
+                    });
+
+                if (!rpc_st.ok()) {
+                    LOG(WARNING)<< "Failed to get tablet replicas info, encounter rpc failure, tablet start: "
+                                << start << " end: " << end;
+                    start = end;
+                    continue;
+                }
+
+                std::unordered_map<int64_t, TBackend> tablet_master;
+                for (const auto& it : result.tablet_replicas_info) {
+                    auto tablet_id = it.first;
+                    std::vector<TBackend> backends;
+                    for (const auto& backend : it.second) {
+                        backends.emplace_back(backend);
+                    }
+                    TBackend master;
+                    auto tablet = _tablet_manager->get_tablet(tablet_id);
+                    if (tablet == nullptr) {
+                        VLOG_CRITICAL << "tablet is nullptr";
+                        continue;
+                    }
+                    auto hasMaster = tablet->calc_master_info(backends, master);
+                    if (hasMaster) {
+                        tablet_master[tablet_id] = master;
+                    } 
+                }
+                VLOG_CRITICAL << "get tablet replicas info from fe, size is " << end - start 
+                           << " token=" << result.token;
+
+                // update _tablet_replicas_info
+                {
+                    std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
+                    for(const auto& it : tablet_master) {
+                        VLOG_CRITICAL << "tablet " << it.first << " , master is " << it.second.host;
+                        _tablet_master_info[it.first] = it.second;
+                    }
+                    _token = result.token;
+                }
+
+                start = end;
+            }
+            interval = config::tablet_replicas_info_update_interval_seconds;
+        } else {
+            interval = 15; // 15s to check enable_single_replica_compaction
+        }
+    } while (!_stop_background_threads_latch.wait_for(std::chrono::seconds(interval)));
+}
+
+Status StorageEngine::_submit_single_replica_compaction_task(TabletSharedPtr tablet) {
+    
+    bool already_exist = _push_tablet_into_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
+    if (already_exist) {
+        return Status::AlreadyExist(
+                "compaction task has already been submitted, tablet_id={}", tablet->tablet_id());
+    }
+    
+    already_exist = _push_tablet_into_submitted_compaction(tablet, CompactionType::BASE_COMPACTION);
+    if (already_exist) {
+        _pop_tablet_from_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
+        return Status::AlreadyExist(
+                "compaction task has already been submitted, tablet_id={}", tablet->tablet_id());
+    }
+    
+    VLOG_CRITICAL << "submit single replica compaction!";
+
+    Status st = tablet->prepare_single_replica_compaction(tablet);
+    
+    if(st.ok()) {
+        auto st = _single_replica_compaction_thread_pool->submit_func([tablet, this](){
+            tablet->execute_single_replica_compaction();
+            tablet->reset_single_replica_compaction();
+            _pop_tablet_from_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
+            _pop_tablet_from_submitted_compaction(tablet, CompactionType::BASE_COMPACTION);
+        });
+        if (!st.ok()) {
+            tablet->reset_single_replica_compaction();
+            _pop_tablet_from_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
+            _pop_tablet_from_submitted_compaction(tablet, CompactionType::BASE_COMPACTION);
+            return Status::InternalError(
+                    "failed to submit single replica compaction task to thread pool, "
+                    "tablet_id={} ", tablet->tablet_id());
+        }
+        return Status::OK();
+    } else {
+        tablet->reset_single_replica_compaction();
+        _pop_tablet_from_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
+        _pop_tablet_from_submitted_compaction(tablet, CompactionType::BASE_COMPACTION);
+        if (!st.ok()) {
+            return Status::InternalError(
+                    "failed to prepare single replica compaction task tablet_id={} ", tablet->tablet_id());
+        }
+        return st;
+    }
+}
+
+void StorageEngine::get_tablet_versions(const PGetTabletVersionsRequest* request, PGetTabletVersionsResponse* response) {
+    TabletSharedPtr tablet = _tablet_manager->get_tablet(request->tablet_id());
+    if (tablet == nullptr) {
+        response->set_version_status(PVersionStatus::Version_NONE);
+        response->mutable_status()->set_status_code(0);
+        return;
+    }
+    std::vector<Version> local_versions = tablet->get_all_versions();
+    
+    if(local_versions.empty()) {
+        response->set_version_status(PVersionStatus::Version_NONE);
+        response->mutable_status()->set_status_code(0);
+        return;
+    }
+
+    for(const auto& version : local_versions) {
+        response->add_versions(version.first);
+        response->add_versions(version.second);
+    } 
+    response->set_version_status(PVersionStatus::Version_OK);
 }
 
 std::vector<TabletSharedPtr> StorageEngine::_generate_compaction_tasks(
@@ -638,6 +863,17 @@ void StorageEngine::_pop_tablet_from_submitted_compaction(TabletSharedPtr tablet
 
 Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
                                               CompactionType compaction_type) {
+    bool has_master_tablet = false;
+    {
+        std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
+        if(_tablet_master_info.count(tablet->tablet_id())) {
+            has_master_tablet = true;
+        }
+    }
+    if (config::enable_single_replica_compaction && has_master_tablet) {
+        return Status::OK();
+    }
+    
     bool already_exist = _push_tablet_into_submitted_compaction(tablet, compaction_type);
     if (already_exist) {
         return Status::AlreadyExist(
@@ -687,11 +923,14 @@ Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
 
 Status StorageEngine::submit_compaction_task(TabletSharedPtr tablet,
                                              CompactionType compaction_type) {
+
+    
     _update_cumulative_compaction_policy();
     if (tablet->get_cumulative_compaction_policy() == nullptr) {
         tablet->set_cumulative_compaction_policy(_cumulative_compaction_policy);
     }
     tablet->set_skip_compaction(false);
+
     return _submit_compaction_task(tablet, compaction_type);
 }
 

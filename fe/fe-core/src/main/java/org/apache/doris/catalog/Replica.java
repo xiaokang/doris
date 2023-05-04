@@ -442,6 +442,10 @@ public class Replica implements Writable {
         return state == ReplicaState.COMPACTION_TOO_SLOW;
     }
 
+    public boolean isNormal() {
+        return state == ReplicaState.NORMAL;
+    }
+
     public long getVersionCount() {
         return versionCount;
     }
@@ -523,13 +527,13 @@ public class Replica implements Writable {
 
         Replica replica = (Replica) obj;
         return (id == replica.id)
-                && (backendId == replica.backendId)
-                && (version == replica.version)
-                && (dataSize == replica.dataSize)
-                && (rowCount == replica.rowCount)
-                && (state.equals(replica.state))
-                && (lastFailedVersion == replica.lastFailedVersion)
-                && (lastSuccessVersion == replica.lastSuccessVersion);
+            && (backendId == replica.backendId)
+            && (version == replica.version)
+            && (dataSize == replica.dataSize)
+            && (rowCount == replica.rowCount)
+            && (state.equals(replica.state))
+            && (lastFailedVersion == replica.lastFailedVersion)
+            && (lastSuccessVersion == replica.lastSuccessVersion);
     }
 
     private static class VersionComparator<T extends Replica> implements Comparator<T> {

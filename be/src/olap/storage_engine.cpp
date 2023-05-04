@@ -47,6 +47,7 @@
 #include "olap/rowset/unique_rowset_id_generator.h"
 #include "olap/schema_change.h"
 #include "olap/segment_loader.h"
+#include "olap/single_replica_compaction.h"
 #include "olap/tablet_meta.h"
 #include "olap/tablet_meta_manager.h"
 #include "olap/utils.h"
@@ -131,6 +132,9 @@ StorageEngine::~StorageEngine() {
     }
     if (_cumu_compaction_thread_pool) {
         _cumu_compaction_thread_pool->shutdown();
+    }
+    if (_single_replica_compaction_thread_pool) {
+        _single_replica_compaction_thread_pool->shutdown();
     }
 
     if (_seg_compaction_thread_pool) {
@@ -536,6 +540,7 @@ void StorageEngine::stop() {
     }
 
     THREAD_JOIN(_compaction_tasks_producer_thread);
+    THREAD_JOIN(_tablet_replicas_info_update_thread);
     THREAD_JOIN(_unused_rowset_monitor_thread);
     THREAD_JOIN(_garbage_sweeper_thread);
     THREAD_JOIN(_disk_stat_monitor_thread);
@@ -1017,6 +1022,11 @@ void StorageEngine::create_cumulative_compaction(
 void StorageEngine::create_base_compaction(TabletSharedPtr best_tablet,
                                            std::shared_ptr<BaseCompaction>& base_compaction) {
     base_compaction.reset(new BaseCompaction(best_tablet));
+}
+
+void StorageEngine::create_single_replica_compaction(
+        TabletSharedPtr best_tablet, std::shared_ptr<SingleReplicaCompaction>& single_replica_compaction) {
+    single_replica_compaction.reset(new SingleReplicaCompaction(best_tablet));
 }
 
 // Return json:

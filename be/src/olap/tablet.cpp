@@ -44,6 +44,8 @@
 #include "common/config.h"
 #include "common/logging.h"
 #include "common/status.h"
+#include "gen_cpp/internal_service.pb.h"
+#include "gen_cpp/Types_constants.h"
 #include "gutil/strings/stringpiece.h"
 #include "io/fs/path.h"
 #include "io/fs/remote_file_system.h"
@@ -60,15 +62,20 @@
 #include "olap/rowset/rowset_meta_manager.h"
 #include "olap/rowset/segment_v2/column_reader.h"
 #include "olap/schema_change.h"
+#include "olap/single_replica_compaction.h"
 #include "olap/storage_engine.h"
 #include "olap/storage_policy.h"
 #include "olap/tablet_meta.h"
 #include "olap/tablet_meta_manager.h"
 #include "olap/tablet_schema.h"
 #include "olap/txn_manager.h"
+#include "runtime/client_cache.h"
 #include "segment_loader.h"
+#include "service/brpc.h"
 #include "service/point_query_executor.h"
+#include "util/brpc_client_cache.h"
 #include "util/defer_op.h"
+#include "util/hash_util.hpp"
 #include "util/path_util.h"
 #include "util/pretty_printer.h"
 #include "util/scoped_cleanup.h"
@@ -92,6 +99,8 @@ DEFINE_COUNTER_METRIC_PROTOTYPE_2ARG(flush_finish_count, MetricUnit::OPERATIONS)
 bvar::Adder<uint64_t> exceed_version_limit_counter;
 bvar::Window<bvar::Adder<uint64_t>> exceed_version_limit_counter_minute(
         &exceed_version_limit_counter, 60);
+
+static const uint64_t DEFAULT_SEED = 104729;
 
 struct WriteCooldownMetaExecutors {
     WriteCooldownMetaExecutors(size_t executor_nums = 5);
@@ -384,6 +393,69 @@ Status Tablet::add_rowset(RowsetSharedPtr rowset) {
     modify_rowsets(empty_vec, rowsets_to_delete);
     ++_newly_created_rowset_num;
     return Status::OK();
+}
+
+bool Tablet::should_fetch_from_peer(std::vector<Version>& peer_versions){
+    auto input_rowsets = pick_candidate_rowsets_to_single_replica_compaction();
+    std::vector<Version> local_versions;
+    auto rs_iter = input_rowsets.begin();
+    while (rs_iter != input_rowsets.end()) {
+        local_versions.emplace_back((*rs_iter)->version()); 
+        ++rs_iter;
+    }
+    std::sort(local_versions.begin(), local_versions.end(),
+              [](const Version& left, const Version& right) {
+                  return left.first < right.first;
+              });
+    bool find = false;
+    int index_peer = 0;
+    int index_local = 0;
+    while (index_local < local_versions.size() && index_peer < peer_versions.size()) {
+        if (peer_versions[index_peer].first == local_versions[index_local].first
+            && peer_versions[index_peer].second == local_versions[index_local].second) {
+                ++index_peer;
+                ++index_local;
+                continue;
+        } 
+        break;    
+        
+    }
+    if(index_peer >= peer_versions.size() || index_local >= local_versions.size()) {
+        return false;
+    }
+    while (index_peer < peer_versions.size()) {
+        if (peer_versions[index_peer].second < local_versions[index_local].first) {
+            ++index_peer;
+            continue;
+        }
+        break;
+    }
+    if(index_peer >= peer_versions.size() || index_local >= local_versions.size()) {
+        return false;
+    }
+    if (peer_versions[index_peer].first != local_versions[index_local].first) {
+        return false;
+    }
+    if (peer_versions[index_peer].contains(local_versions[index_local])) {
+        ++index_local;
+        while (index_local < local_versions.size()) {
+            if (peer_versions[index_peer].contains(local_versions[index_local])) {
+                ++index_local;
+                continue;
+            }
+            break;
+        }
+        if(index_peer >= peer_versions.size() || index_local > local_versions.size()) {
+            return false;
+        }
+        if (local_versions[index_local - 1].second == peer_versions[index_peer].second) {
+            VLOG_CRITICAL << tablet_id() << " tablet should fetch peer replica";
+            find = true;
+            
+        }
+    }
+
+    return find;
 }
 
 Status Tablet::modify_rowsets(std::vector<RowsetSharedPtr>& to_add,
@@ -1225,6 +1297,71 @@ std::vector<RowsetSharedPtr> Tablet::pick_candidate_rowsets_to_cumulative_compac
     return candidate_rowsets;
 }
 
+std::vector<RowsetSharedPtr> Tablet::pick_candidate_rowsets_to_single_replica_compaction() {
+    std::vector<RowsetSharedPtr> candidate_rowsets;
+    {
+        std::shared_lock rlock(_meta_lock);
+        for (const auto& [version, rs] : _rs_version_map) {
+            if (rs->is_local()) {
+                candidate_rowsets.push_back(rs);
+            }
+        }
+    }
+    std::sort(candidate_rowsets.begin(), candidate_rowsets.end(), Rowset::comparator);
+    return candidate_rowsets;
+}
+
+Status Tablet::get_peer_versions(std::vector<Version>& peer_versions) {
+    TBackend addr;
+    std::string token;
+    if(!StorageEngine::instance()->get_tbackend(tablet_id(), addr, token)) {
+        LOG(INFO) << tablet_id() <<  " tablet don't have master peer";
+        return Status::Aborted("no master peer");;
+    }
+    
+    PGetTabletVersionsRequest request;
+    request.set_tablet_id(tablet_id());
+    PGetTabletVersionsResponse response;
+    std::shared_ptr<PBackendService_Stub> stub =
+            ExecEnv::GetInstance()->brpc_internal_client_cache()->get_client(addr.host,
+                                                                            addr.brpc_port);
+
+    brpc::Controller cntl;
+    stub->get_tablet_versions(&cntl, &request, &response, nullptr);
+    if (cntl.Failed()) {
+        LOG(WARNING) << "open brpc connection to " << addr.host << " failed: " << cntl.ErrorText();
+        return Status::InternalError("failed to open brpc");
+    }
+
+    if (response.version_status() == PVersionStatus::Version_NONE) {
+        VLOG_DEBUG << "can't get peer versions in peer replica";
+        return Status::InternalError("failed to get peer versions");
+    }
+    
+    for (int i = 0; i < response.versions_size() / 2; ++i) {
+        peer_versions.emplace_back(Version(response.versions(i * 2), response.versions(i * 2 + 1)));
+    }
+    return Status::OK();
+}
+
+bool Tablet::calc_master_info(std::vector<TBackend> &backends, TBackend &master) const {
+    int64_t cur_replica_id = replica_id();
+    VLOG_CRITICAL << tablet_id() << "tablet has " << backends.size() << " peer replicas";
+    uint64_t min_hash = HashUtil::hash64(&cur_replica_id, sizeof(cur_replica_id), DEFAULT_SEED);
+    bool pick_other = false;
+    for(const auto& backend : backends) {
+        int64_t peer_replica_id = backend.replica_id;
+        uint64_t hash = HashUtil::hash64(&peer_replica_id, sizeof(peer_replica_id), DEFAULT_SEED);
+        if(hash < min_hash) {
+            pick_other = true;
+            master = backend;
+            min_hash = hash;
+        }
+    }
+    VLOG_CRITICAL << tablet_id() <<  "tablet master info is: " << pick_other;
+    return pick_other;
+}
+
 std::vector<RowsetSharedPtr> Tablet::pick_candidate_rowsets_to_base_compaction() {
     std::vector<RowsetSharedPtr> candidate_rowsets;
     {
@@ -1616,6 +1753,56 @@ Status Tablet::prepare_compaction_and_calculate_permits(CompactionType compactio
         *permits += rowset->rowset_meta()->get_compaction_score();
     }
     return Status::OK();
+}
+
+Status Tablet::prepare_single_replica_compaction(TabletSharedPtr tablet) {
+    scoped_refptr<Trace> trace(new Trace);
+    ADOPT_TRACE(trace.get());
+    
+    TRACE("create single replica compaction");
+
+    VLOG_CRITICAL << tablet_id() << " create single replcia compaction!";
+    
+    StorageEngine::instance()->create_single_replica_compaction(tablet, _single_replica_compaction);
+    Status res = _single_replica_compaction->prepare_compact();
+    if (!res.ok()) {
+        if (!res.is<CUMULATIVE_NO_SUITABLE_VERSION>()) {
+            return Status::InternalError("prepare single replica compaction with err: {}", res);
+        }
+    }
+    return Status::OK();                                            
+}
+
+void Tablet::execute_single_replica_compaction() {
+    scoped_refptr<Trace> trace(new Trace);
+    ADOPT_TRACE(trace.get());
+    TRACE("execute single replica compaction");
+    Status res = _single_replica_compaction->execute_compact();
+    if (!res.ok()) {
+        LOG(WARNING) << "failed to do single replica compaction. res=" << res
+                     << ", tablet=" << full_name();
+        return;
+    } 
+}
+
+void Tablet::reset_single_replica_compaction() {
+    _single_replica_compaction.reset();
+}
+
+
+std::vector<Version> Tablet::get_all_versions() {
+    std::vector<Version> local_versions;
+    {
+        std::lock_guard<std::shared_mutex> wrlock(_meta_lock);
+        for (const auto& it : _rs_version_map) {
+            local_versions.emplace_back(it.first);
+        }
+    }
+    std::sort(local_versions.begin(), local_versions.end(),
+              [](const Version& left, const Version& right) {
+                  return left.first < right.first;
+              });
+    return local_versions;
 }
 
 void Tablet::execute_compaction(CompactionType compaction_type) {
