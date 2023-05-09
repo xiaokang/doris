@@ -1454,11 +1454,12 @@ Status SegmentIterator::_read_columns_by_index(uint32_t nrows_read_limit, uint32
             _cur_rowid = range_from;
             _opts.stats->block_first_read_seek_num += 1;
             SCOPED_RAW_TIMER(&_opts.stats->block_first_read_seek_ns);
-            RETURN_IF_ERROR(_seek_columns(_first_read_column_ids, _cur_rowid));
+            //RETURN_IF_ERROR(_seek_columns(_first_read_column_ids, _cur_rowid));
         }
         size_t rows_to_read = range_to - range_from;
-        RETURN_IF_ERROR(
-                _read_columns(_first_read_column_ids, _current_return_columns, rows_to_read));
+        //RETURN_IF_ERROR(
+        //        _read_columns(_first_read_column_ids, _current_return_columns, rows_to_read));
+        _split_row_cursors.emplace_back(std::pair {_cur_rowid, _cur_rowid + rows_to_read});
         _cur_rowid += rows_to_read;
         if (set_block_rowid) {
             // Here use std::iota is better performance than for-loop, maybe for-loop is not vectorized
@@ -1473,6 +1474,20 @@ Status SegmentIterator::_read_columns_by_index(uint32_t nrows_read_limit, uint32
         _split_row_ranges.emplace_back(std::pair {range_from, range_to});
         // if _opts.read_orderby_key_reverse is true, only read one range for fast reverse purpose
     } while (nrows_read < nrows_read_limit && !_opts.read_orderby_key_reverse);
+    //for (auto cid:_first_read_column_ids){
+    vector<rowid_t> sel_rowid_idx(nrows_read);
+
+    // Build sel_rowid_idx from _split_row_cursors
+    uint16_t index = 0;
+    for (const auto& pair : _split_row_cursors) {
+        for (rowid_t i = pair.first; i < pair.second; ++i) {
+            sel_rowid_idx[index++] = i;
+        }
+    }
+    RETURN_IF_ERROR(_read_columns_by_rowids_directly(_first_read_column_ids, sel_rowid_idx,
+                                                     nrows_read, &_current_return_columns));
+
+    _split_row_cursors.clear();
     return Status::OK();
 }
 
@@ -1583,6 +1598,22 @@ uint16_t SegmentIterator::_evaluate_short_circuit_predicate(uint16_t* vec_sel_ro
                                                                 vec_sel_rowid_idx, selected_size);
     _opts.stats->rows_vec_del_cond_filtered += original_size - selected_size;
     return selected_size;
+}
+
+Status SegmentIterator::_read_columns_by_rowids_directly(
+        std::vector<ColumnId>& read_column_ids, std::vector<rowid_t>& rowid_vector,
+        size_t select_size, vectorized::MutableColumns* mutable_columns) {
+    SCOPED_RAW_TIMER(&_opts.stats->lazy_read_ns);
+
+    for (auto cid : read_column_ids) {
+        if (_prune_column(cid, (*mutable_columns)[cid], true, select_size)) {
+            continue;
+        }
+        RETURN_IF_ERROR(_column_iterators[_schema.unique_id(cid)]->read_by_rowids(
+                rowid_vector.data(), select_size, _current_return_columns[cid]));
+    }
+
+    return Status::OK();
 }
 
 Status SegmentIterator::_read_columns_by_rowids(std::vector<ColumnId>& read_column_ids,
