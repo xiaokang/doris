@@ -2147,5 +2147,9 @@ public class Config extends ConfigBase {
 
     @ConfField(mutable = true)
     public static boolean disable_datev1  = true;
+
+    // 1 slot for reduce unnecessary balance task, provided a more accurate estimate of capacity
+    @ConfField(masterOnly = true, mutable = true)
+    public static int balance_slot_num_per_path = 1;
 }
 
