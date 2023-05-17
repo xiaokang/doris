@@ -207,7 +207,8 @@ public:
     // check cumulative compaction config
     void check_cumulative_compaction_config();
 
-    Status submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type);
+    Status submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type,
+                                  bool force);
     Status submit_seg_compaction_task(BetaRowsetWriter* writer,
                                       SegCompactionCandidatesSharedPtr segments);
 
@@ -292,7 +293,8 @@ private:
 
     Status _init_stream_load_recorder(const std::string& stream_load_record_path);
 
-    Status _submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type);
+    Status _submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type,
+                                   bool force);
 
     Status _submit_single_replica_compaction_task(TabletSharedPtr tablet);
 

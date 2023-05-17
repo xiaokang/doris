@@ -15,30 +15,54 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gperftools/profiler.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <gen_cpp/Types_types.h>
+#include <stdint.h>
 
-#include <boost/algorithm/string.hpp>
+#include <algorithm>
+#include <atomic>
+// IWYU pragma: no_include <bits/chrono.h>
+#include <chrono> // IWYU pragma: keep
 #include <cmath>
+#include <condition_variable>
 #include <ctime>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <ostream>
 #include <random>
 #include <string>
+#include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "common/config.h"
+#include "common/logging.h"
 #include "common/status.h"
 #include "gen_cpp/internal_service.pb.h"
 #include "gen_cpp/BackendService.h"
 #include "gen_cpp/FrontendService.h"
 #include "gen_cpp/Types_constants.h"
+#include "gutil/ref_counted.h"
 #include "gutil/strings/substitute.h"
 #include "io/cache/file_cache_manager.h"
+#include "gen_cpp/internal_service.pb.h"
+#include "gen_cpp/BackendService.h"
+#include "gen_cpp/FrontendService.h"
+#include "gen_cpp/Types_constants.h"
+#include "io/fs/file_writer.h" // IWYU pragma: keep
+#include "io/fs/path.h"
 #include "olap/cold_data_compaction.h"
+#include "olap/compaction_permit_limiter.h"
 #include "olap/cumulative_compaction.h"
+#include "olap/cumulative_compaction_policy.h"
+#include "olap/data_dir.h"
 #include "olap/olap_common.h"
-#include "olap/olap_define.h"
 #include "olap/rowset/beta_rowset_writer.h"
+#include "olap/rowset/segcompaction.h"
 #include "olap/storage_engine.h"
+#include "olap/tablet.h"
 #include "olap/tablet_manager.h"
 #include "olap/tablet_meta.h"
 #include "olap/tablet_schema.h"
@@ -46,8 +70,14 @@
 #include "service/brpc.h"
 #include "service/point_query_executor.h"
 #include "util/brpc_client_cache.h"
+#include "util/countdown_latch.h"
+#include "util/doris_metrics.h"
+#include "util/priority_thread_pool.hpp"
+#include "util/thread.h"
+#include "util/threadpool.h"
 #include "util/thrift_rpc_helper.h"
 #include "util/time.h"
+#include "util/uid_util.h"
 
 using std::string;
 
@@ -98,7 +128,7 @@ Status StorageEngine::start_bg_threads() {
                 .set_max_threads(config::max_single_replica_compaction_threads)
                 .build(&_single_replica_compaction_thread_pool);
     }
-            
+
     if (config::enable_segcompaction) {
         ThreadPoolBuilder("SegCompactionTaskThreadPool")
                 .set_min_threads(config::seg_compaction_max_threads)
@@ -453,7 +483,7 @@ void StorageEngine::_adjust_compaction_thread_num() {
             }
         }
     }
-    
+
 }
 
 void StorageEngine::_compaction_tasks_producer_callback() {
@@ -559,7 +589,7 @@ void StorageEngine::_compaction_tasks_producer_callback() {
                 }
                 VLOG_CRITICAL << "start to submit compaction task for tablet: "
                                  << tablet->tablet_id();
-                Status st = _submit_compaction_task(tablet, compaction_type);
+                Status st = _submit_compaction_task(tablet, compaction_type, false);
                 if (!st.ok()) {
                     LOG(WARNING) << "failed to submit compaction task for tablet: "
                                  << tablet->tablet_id() << ", err: " << st;
@@ -577,7 +607,7 @@ void StorageEngine::_tablet_replicas_info_update_callback() {
     ProfilerRegisterThread();
 #endif
     LOG(INFO) << "try to start tablet replicas info update process!";
-    
+
     int64_t interval = config::tablet_replicas_info_update_interval_seconds;
     do {
         if (config::enable_single_replica_compaction) {
@@ -597,7 +627,7 @@ void StorageEngine::_tablet_replicas_info_update_callback() {
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 continue;
             }
-            
+
             int start = 0;
             int tablet_size = all_tablets.size();
             while (start < tablet_size) {
@@ -637,9 +667,9 @@ void StorageEngine::_tablet_replicas_info_update_callback() {
                     auto hasMaster = tablet->calc_master_info(backends, master);
                     if (hasMaster) {
                         tablet_master[tablet_id] = master;
-                    } 
+                    }
                 }
-                VLOG_CRITICAL << "get tablet replicas info from fe, size is " << end - start 
+                VLOG_CRITICAL << "get tablet replicas info from fe, size is " << end - start
                            << " token=" << result.token;
 
                 // update _tablet_replicas_info
@@ -662,24 +692,24 @@ void StorageEngine::_tablet_replicas_info_update_callback() {
 }
 
 Status StorageEngine::_submit_single_replica_compaction_task(TabletSharedPtr tablet) {
-    
+
     bool already_exist = _push_tablet_into_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
     if (already_exist) {
         return Status::AlreadyExist(
                 "compaction task has already been submitted, tablet_id={}", tablet->tablet_id());
     }
-    
+
     already_exist = _push_tablet_into_submitted_compaction(tablet, CompactionType::BASE_COMPACTION);
     if (already_exist) {
         _pop_tablet_from_submitted_compaction(tablet, CompactionType::CUMULATIVE_COMPACTION);
         return Status::AlreadyExist(
                 "compaction task has already been submitted, tablet_id={}", tablet->tablet_id());
     }
-    
+
     VLOG_CRITICAL << "submit single replica compaction!";
 
     Status st = tablet->prepare_single_replica_compaction(tablet);
-    
+
     if(st.ok()) {
         auto st = _single_replica_compaction_thread_pool->submit_func([tablet, this](){
             tablet->execute_single_replica_compaction();
@@ -716,7 +746,7 @@ void StorageEngine::get_tablet_versions(const PGetTabletVersionsRequest* request
         return;
     }
     std::vector<Version> local_versions = tablet->get_all_versions();
-    
+
     if(local_versions.empty()) {
         response->set_version_status(PVersionStatus::Version_NONE);
         response->mutable_status()->set_status_code(0);
@@ -726,7 +756,7 @@ void StorageEngine::get_tablet_versions(const PGetTabletVersionsRequest* request
     for(const auto& version : local_versions) {
         response->add_versions(version.first);
         response->add_versions(version.second);
-    } 
+    }
     response->set_version_status(PVersionStatus::Version_OK);
 }
 
@@ -862,7 +892,7 @@ void StorageEngine::_pop_tablet_from_submitted_compaction(TabletSharedPtr tablet
 }
 
 Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
-                                              CompactionType compaction_type) {
+                                              CompactionType compaction_type, bool force) {
     bool has_master_tablet = false;
     {
         std::unique_lock<std::mutex> lock(_tablet_master_info_mutex);
@@ -873,7 +903,7 @@ Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
     if (config::enable_single_replica_compaction && has_master_tablet) {
         return Status::OK();
     }
-    
+
     bool already_exist = _push_tablet_into_submitted_compaction(tablet, compaction_type);
     if (already_exist) {
         return Status::AlreadyExist(
@@ -882,7 +912,10 @@ Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
     }
     int64_t permits = 0;
     Status st = tablet->prepare_compaction_and_calculate_permits(compaction_type, tablet, &permits);
-    if (st.ok() && permits > 0 && _permit_limiter.request(permits)) {
+    if (st.ok() && permits > 0) {
+        if (!force) {
+            _permit_limiter.request(permits);
+        }
         std::unique_ptr<ThreadPool>& thread_pool =
                 (compaction_type == CompactionType::CUMULATIVE_COMPACTION)
                         ? _cumu_compaction_thread_pool
@@ -921,17 +954,14 @@ Status StorageEngine::_submit_compaction_task(TabletSharedPtr tablet,
     }
 }
 
-Status StorageEngine::submit_compaction_task(TabletSharedPtr tablet,
-                                             CompactionType compaction_type) {
-
-    
+Status StorageEngine::submit_compaction_task(TabletSharedPtr tablet, CompactionType compaction_type,
+                                             bool force) {
     _update_cumulative_compaction_policy();
     if (tablet->get_cumulative_compaction_policy() == nullptr) {
         tablet->set_cumulative_compaction_policy(_cumulative_compaction_policy);
     }
     tablet->set_skip_compaction(false);
-
-    return _submit_compaction_task(tablet, compaction_type);
+    return _submit_compaction_task(tablet, compaction_type, force);
 }
 
 Status StorageEngine::_handle_seg_compaction(BetaRowsetWriter* writer,
