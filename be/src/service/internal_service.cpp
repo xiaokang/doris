@@ -59,7 +59,6 @@
 #include "olap/rowset/rowset.h"
 #include "olap/rowset/rowset_factory.h"
 #include "olap/rowset/rowset_meta.h"
-#include "olap/rowset/segment_v2/inverted_index_desc.h"
 #include "olap/rowset/segment_v2/column_reader.h"
 #include "olap/rowset/segment_v2/common.h"
 #include "olap/rowset/segment_v2/segment.h"
@@ -1120,32 +1119,6 @@ void PInternalServiceImpl::hand_shake(google::protobuf::RpcController* controlle
     }
 }
 
-static Status download_file_action(std::string& remote_file_url, std::string& local_file_path, uint64_t estimate_timeout, uint64_t file_size) {
-    auto download_cb = [remote_file_url, estimate_timeout, local_file_path,
-            file_size](HttpClient* client) {
-        RETURN_IF_ERROR(client->init(remote_file_url));
-        client->set_timeout_ms(estimate_timeout * 1000);
-        RETURN_IF_ERROR(client->download(local_file_path));
-
-        if (file_size > 0) {
-            // Check file length
-            uint64_t local_file_size = std::filesystem::file_size(local_file_path);
-            if (local_file_size != file_size) {
-                LOG(WARNING) << "failed to pull rowset for slave replica. download file "
-                                "length error"
-                             << ", remote_path=" << remote_file_url
-                             << ", file_size=" << file_size
-                             << ", local_file_size=" << local_file_size;
-                return Status::InternalError("downloaded file size is not equal");
-            }
-        }
-
-        chmod(local_file_path.c_str(), S_IRUSR | S_IWUSR);
-        return Status::OK();
-    };
-    return HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb);
-}
-
 void PInternalServiceImpl::request_slave_tablet_pull_rowset(
         google::protobuf::RpcController* controller, const PTabletWriteSlaveRequest* request,
         PTabletWriteSlaveResult* response, google::protobuf::Closure* done) {
@@ -1213,18 +1186,35 @@ void PInternalServiceImpl::request_slave_tablet_pull_rowset(
             }
 
             std::stringstream ss;
-            ss << rowset_path << "/" << remote_rowset_id << "_" << segment.first
-               << ".dat";
-            std::string remote_file_path = ss.str();
-            ss.str("");
             ss << "http://" << host << ":" << http_port << "/api/_tablet/_download?token=" << token
-               << "&file=" << remote_file_path;
+               << "&file=" << rowset_path << "/" << remote_rowset_id << "_" << segment.first
+               << ".dat";
             std::string remote_file_url = ss.str();
             ss.str("");
             ss << tablet->tablet_path() << "/" << rowset_meta->rowset_id() << "_" << segment.first
                << ".dat";
             std::string local_file_path = ss.str();
-            auto st = download_file_action(remote_file_url, local_file_path, estimate_timeout, file_size);
+
+            auto download_cb = [remote_file_url, estimate_timeout, local_file_path,
+                                file_size](HttpClient* client) {
+                RETURN_IF_ERROR(client->init(remote_file_url));
+                client->set_timeout_ms(estimate_timeout * 1000);
+                RETURN_IF_ERROR(client->download(local_file_path));
+
+                // Check file length
+                uint64_t local_file_size = std::filesystem::file_size(local_file_path);
+                if (local_file_size != file_size) {
+                    LOG(WARNING) << "failed to pull rowset for slave replica. download file "
+                                    "length error"
+                                 << ", remote_path=" << remote_file_url
+                                 << ", file_size=" << file_size
+                                 << ", local_file_size=" << local_file_size;
+                    return Status::InternalError("downloaded file size is not equal");
+                }
+                chmod(local_file_path.c_str(), S_IRUSR | S_IWUSR);
+                return Status::OK();
+            };
+            auto st = HttpClient::execute_with_retry(DOWNLOAD_FILE_MAX_RETRY, 1, download_cb);
             if (!st.ok()) {
                 LOG(WARNING) << "failed to pull rowset for slave replica. failed to download "
                                 "file. url="
@@ -1234,38 +1224,9 @@ void PInternalServiceImpl::request_slave_tablet_pull_rowset(
                                             rowset_meta->tablet_id(), node_id, false);
                 return;
             }
-            LOG(INFO) << "succeed to download file for slave replica. url=" << remote_file_url
-                      << ", local_path=" << local_file_path
-                      << ", txn_id=" << rowset_meta->txn_id();
-
-            auto tablet_schema = rowset_meta->tablet_schema();
-            for (auto& column : tablet_schema->columns()) {
-                const TabletIndex* index_meta = tablet_schema->get_inverted_index(column.unique_id());
-                if (index_meta) {
-                    std::string remote_inverted_index_file = InvertedIndexDescriptor::get_index_file_name(
-                            remote_file_path, index_meta->index_id());
-                    ss.str("");
-                    ss << "http://" << host << ":" << http_port << "/api/_tablet/_download?token=" << token
-                       << "&file=" << remote_inverted_index_file;
-                    std::string remote_inverted_index_file_url = ss.str();
-                    std::string local_inverted_index_file = InvertedIndexDescriptor::get_index_file_name(
-                            local_file_path, index_meta->index_id());
-                    st = download_file_action(remote_inverted_index_file_url, local_inverted_index_file, estimate_timeout, 0);
-                    if (!st.ok()) {
-                        LOG(WARNING) << "failed to pull rowset for slave replica. failed to download "
-                                        "file. url="
-                                     << remote_inverted_index_file_url << ", local_path=" << local_inverted_index_file
-                                     << ", txn_id=" << rowset_meta->txn_id();
-                        _response_pull_slave_rowset(host, brpc_port, rowset_meta->txn_id(),
-                                                    rowset_meta->tablet_id(), node_id, false);
-                        return;
-                    }
-
-                    LOG(INFO) << "succeed to download file for slave replica. url=" << remote_inverted_index_file_url
-                                  << ", local_path=" << local_inverted_index_file
-                                  << ", txn_id=" << rowset_meta->txn_id();
-                }
-            }
+            VLOG_CRITICAL << "succeed to download file for slave replica. url=" << remote_file_url
+                          << ", local_path=" << local_file_path
+                          << ", txn_id=" << rowset_meta->txn_id();
         }
 
         RowsetSharedPtr rowset;
