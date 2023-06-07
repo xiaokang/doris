@@ -195,9 +195,6 @@ private:
     uint16_t _evaluate_vectorization_predicate(uint16_t* sel_rowid_idx, uint16_t selected_size);
     uint16_t _evaluate_short_circuit_predicate(uint16_t* sel_rowid_idx, uint16_t selected_size);
     void _output_non_pred_columns(vectorized::Block* block);
-    Status _read_columns_by_rowids_directly(std::vector<ColumnId>& read_column_ids,
-                                            std::vector<rowid_t>& rowid_vector, size_t select_size,
-                                            vectorized::MutableColumns* mutable_columns);
     [[nodiscard]] Status _read_columns_by_rowids(std::vector<ColumnId>& read_column_ids,
                                                  std::vector<rowid_t>& rowid_vector,
                                                  uint16_t* sel_rowid_idx, size_t select_size,
@@ -321,7 +318,6 @@ private:
     // "column_name+operator+value-> <in_compound_query, rowid_result>
     std::unordered_map<std::string, std::pair<bool, roaring::Roaring>> _rowid_result_for_index;
     std::vector<std::pair<uint32_t, uint32_t>> _split_row_ranges;
-    std::vector<std::pair<uint32_t, uint32_t>> _split_row_cursors;
     // an iterator for `_row_bitmap` that can be used to extract row range to scan
     std::unique_ptr<BitmapRangeIterator> _range_iter;
     // the next rowid to read
