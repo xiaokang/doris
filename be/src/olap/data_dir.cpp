@@ -509,6 +509,10 @@ Status DataDir::load() {
                              << " tablet: " << rowset_meta->tablet_id()
                              << " txn: " << rowset_meta->txn_id();
                 rowset_meta->set_partition_id(tablet->partition_id());
+                if (rowset_meta->partition_id() < 1) {
+                    LOG(WARNING) << "skip still bad partition_id " << rowset_meta->partition_id();
+                    continue;
+                }
             }
             Status commit_txn_status = _txn_manager->commit_txn(
                     _meta, rowset_meta->partition_id(), rowset_meta->txn_id(),
