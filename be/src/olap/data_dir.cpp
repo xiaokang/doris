@@ -502,6 +502,14 @@ Status DataDir::load() {
                 RowsetMetaManager::save(_meta, rowset_meta->tablet_uid(), rowset_meta->rowset_id(),
                                         rowset_meta->get_rowset_pb());
             }
+            if (rowset_meta->partition_id() < 1) {
+                LOG(WARNING) << "fix partition_id from " << rowset_meta->partition_id()
+                             << " to " << tablet->partition_id()
+                             << " rowset: " << rowset_meta->rowset_id()
+                             << " tablet: " << rowset_meta->tablet_id()
+                             << " txn: " << rowset_meta->txn_id();
+                rowset_meta->set_partition_id(tablet->partition_id());
+            }
             Status commit_txn_status = _txn_manager->commit_txn(
                     _meta, rowset_meta->partition_id(), rowset_meta->txn_id(),
                     rowset_meta->tablet_id(), rowset_meta->tablet_schema_hash(),
