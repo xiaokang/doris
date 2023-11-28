@@ -503,16 +503,11 @@ Status DataDir::load() {
                                         rowset_meta->get_rowset_pb());
             }
             if (rowset_meta->partition_id() < 1) {
-                LOG(WARNING) << "fix partition_id from " << rowset_meta->partition_id()
-                             << " to " << tablet->partition_id()
+                LOG(WARNING) << "skip invalid rowset partition_id: " << rowset_meta->partition_id()
+                             << " tablet partition_id: " << tablet->partition_id()
                              << " rowset: " << rowset_meta->rowset_id()
                              << " tablet: " << rowset_meta->tablet_id()
                              << " txn: " << rowset_meta->txn_id();
-                rowset_meta->set_partition_id(tablet->partition_id());
-                if (rowset_meta->partition_id() < 1) {
-                    LOG(WARNING) << "skip still bad partition_id " << rowset_meta->partition_id();
-                    continue;
-                }
             }
             Status commit_txn_status = _txn_manager->commit_txn(
                     _meta, rowset_meta->partition_id(), rowset_meta->txn_id(),
