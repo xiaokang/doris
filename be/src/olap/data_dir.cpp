@@ -509,6 +509,7 @@ Status DataDir::load() {
                              << " rowset: " << rowset_meta->rowset_id()
                              << " tablet: " << rowset_meta->tablet_id()
                              << " txn: " << rowset_meta->txn_id();
+                continue;
             }
             Status commit_txn_status = _txn_manager->commit_txn(
                     _meta, rowset_meta->partition_id(), rowset_meta->txn_id(),
