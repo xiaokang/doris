@@ -21,6 +21,7 @@
 #include <gen_cpp/Types_types.h>
 #include <gen_cpp/olap_file.pb.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <atomic>
 // IWYU pragma: no_include <bits/chrono.h>
@@ -502,7 +503,7 @@ Status DataDir::load() {
                 RowsetMetaManager::save(_meta, rowset_meta->tablet_uid(), rowset_meta->rowset_id(),
                                         rowset_meta->get_rowset_pb());
             }
-            if (rowset_meta->partition_id() < 1) {
+            if (rowset_meta->partition_id() < 1 && getenv("SKIP_INVALID_ROWSET_PARTITION_ID") != nullptr) {
                 LOG(WARNING) << "skip invalid rowset partition_id: " << rowset_meta->partition_id()
                              << " tablet partition_id: " << tablet->partition_id()
                              << " rowset: " << rowset_meta->rowset_id()
