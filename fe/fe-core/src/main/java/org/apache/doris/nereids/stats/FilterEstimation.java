@@ -28,6 +28,7 @@ import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.GreaterThan;
 import org.apache.doris.nereids.trees.expressions.GreaterThanEqual;
 import org.apache.doris.nereids.trees.expressions.InPredicate;
+import org.apache.doris.nereids.trees.expressions.IsNull;
 import org.apache.doris.nereids.trees.expressions.LessThan;
 import org.apache.doris.nereids.trees.expressions.LessThanEqual;
 import org.apache.doris.nereids.trees.expressions.Like;
@@ -228,6 +229,7 @@ public class FilterEstimation extends ExpressionVisitor<Statistics, EstimationCo
         } else {
             selectivity = StatsMathUtil.minNonNaN(1.0, 1.0 / ndv);
         }
+        selectivity = getNotNullSelectivity(statsForLeft, selectivity);
         if (statsForLeft.hasHistogram()) {
             return estimateEqualToWithHistogram(cp.left(), statsForLeft, val, context);
         }
@@ -313,10 +315,11 @@ public class FilterEstimation extends ExpressionVisitor<Statistics, EstimationCo
         selectivity = StatsMathUtil.minNonNaN(1.0, validInOptCount / compareExprStats.ndv);
         compareExprStatsBuilder.setNdv(validInOptCount);
         Statistics estimated = new Statistics(context.statistics);
+        ColumnStatistic stats = compareExprStatsBuilder.build();
+        selectivity = getNotNullSelectivity(stats, selectivity);
         estimated = estimated.withSel(selectivity);
         if (compareExpr instanceof SlotReference) {
-            estimated.addColumnStats(compareExpr,
-                    compareExprStatsBuilder.build());
+            estimated.addColumnStats(compareExpr, stats);
         }
         return estimated;
     }
@@ -351,6 +354,24 @@ public class FilterEstimation extends ExpressionVisitor<Statistics, EstimationCo
         return statisticsBuilder.build();
     }
 
+    @Override
+    public Statistics visitIsNull(IsNull isNull, EstimationContext context) {
+        ColumnStatistic childStats = ExpressionEstimation.estimate(isNull.child(), context.statistics);
+        if (childStats.isUnKnown()) {
+            return new StatisticsBuilder(context.statistics).build();
+        }
+        double outputRowCount = childStats.numNulls;
+        ColumnStatisticBuilder colBuilder = new ColumnStatisticBuilder(childStats);
+        colBuilder.setCount(outputRowCount).setNumNulls(outputRowCount)
+                .setMaxValue(Double.POSITIVE_INFINITY)
+                .setMinValue(Double.NEGATIVE_INFINITY)
+                .setNdv(0);
+        StatisticsBuilder builder = new StatisticsBuilder(context.statistics);
+        builder.setRowCount(outputRowCount);
+        builder.putColumnStatistics(isNull, colBuilder.build());
+        return builder.build();
+    }
+
     static class EstimationContext {
         private final Statistics statistics;
 
@@ -364,13 +385,30 @@ public class FilterEstimation extends ExpressionVisitor<Statistics, EstimationCo
         StatisticRange leftRange =
                 new StatisticRange(leftStats.minValue, leftStats.maxValue, leftStats.ndv, leftExpr.getDataType());
         StatisticRange intersectRange = leftRange.cover(rightRange);
-        ColumnStatisticBuilder leftColumnStatisticBuilder = new ColumnStatisticBuilder(leftStats)
-                .setMinValue(intersectRange.getLow())
-                .setMaxValue(intersectRange.getHigh())
-                .setNdv(intersectRange.getDistinctValues());
-        double sel = leftRange.overlapPercentWith(rightRange);
-        Statistics updatedStatistics = context.statistics.withSel(sel);
-        leftColumnStatisticBuilder.setCount(updatedStatistics.getRowCount());
+
+        ColumnStatisticBuilder leftColumnStatisticBuilder;
+        Statistics updatedStatistics;
+        if (intersectRange.isEmpty()) {
+            updatedStatistics = context.statistics.withRowCount(0);
+            leftColumnStatisticBuilder = new ColumnStatisticBuilder(leftStats)
+                    .setMinValue(Double.NEGATIVE_INFINITY)
+                    .setMinExpr(null)
+                    .setMaxValue(Double.POSITIVE_INFINITY)
+                    .setMaxExpr(null)
+                    .setNdv(0)
+                    .setCount(0)
+                    .setNumNulls(0);
+        } else {
+            leftColumnStatisticBuilder = new ColumnStatisticBuilder(leftStats)
+                    .setMinValue(intersectRange.getLow())
+                    .setMaxValue(intersectRange.getHigh())
+                    .setNdv(intersectRange.getDistinctValues())
+                    .setNumNulls(0);
+            double sel = leftRange.overlapPercentWith(rightRange);
+            sel = getNotNullSelectivity(leftStats, sel);
+            updatedStatistics = context.statistics.withSel(sel);
+            leftColumnStatisticBuilder.setCount(updatedStatistics.getRowCount());
+        }
         updatedStatistics.addColumnStats(leftExpr, leftColumnStatisticBuilder.build());
         leftExpr.accept(new ColumnStatsAdjustVisitor(), updatedStatistics);
         return updatedStatistics;
@@ -562,5 +600,26 @@ public class FilterEstimation extends ExpressionVisitor<Statistics, EstimationCo
     @Override
     public Statistics visitLike(Like like, EstimationContext context) {
         return context.statistics.withSel(DEFAULT_LIKE_COMPARISON_SELECTIVITY);
+    }
+
+    private double getNotNullSelectivity(ColumnStatistic stats, double origSel) {
+        double rowCount = stats.count;
+        double numNulls = stats.numNulls;
+
+        // comment following check since current rowCount and ndv may be inconsistant
+        // e.g, rowCount has been reduced by one filter but another filter column's
+        // ndv and numNull remains originally, which will unexpectedly go into the following
+        // normalization.
+
+        //if (numNulls > rowCount - ndv) {
+        //    numNulls = rowCount - ndv > 0 ? rowCount - ndv : 0;
+        //}
+        double notNullSel = rowCount <= 1.0 ? 1.0 : 1 - getValidSelectivity(numNulls / rowCount);
+        double validSel = origSel * notNullSel;
+        return getValidSelectivity(validSel);
+    }
+
+    private static double getValidSelectivity(double nullSel) {
+        return nullSel < 0 ? 0 : (nullSel > 1 ? 1 : nullSel);
     }
 }
