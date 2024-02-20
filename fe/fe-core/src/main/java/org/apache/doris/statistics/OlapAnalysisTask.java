@@ -64,14 +64,9 @@ public class OlapAnalysisTask extends BaseAnalysisTask {
         params.put("colName", String.valueOf(info.colName));
         params.put("tblName", String.valueOf(info.tblName));
         params.put("sampleExpr", getSampleExpression());
-        try {
-            tbl.readLock();
-            StringSubstitutor stringSubstitutor = new StringSubstitutor(params);
-            String sql = stringSubstitutor.replace(INSERT_TABLE_STATISTICS);
-            execSQL(sql);
-        } finally {
-            tbl.readUnlock();
-        }
+        StringSubstitutor stringSubstitutor = new StringSubstitutor(params);
+        String sql = stringSubstitutor.replace(INSERT_TABLE_STATISTICS);
+        execSQL(sql);
     }
 
     @VisibleForTesting
