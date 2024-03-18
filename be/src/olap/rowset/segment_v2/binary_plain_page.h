@@ -76,6 +76,14 @@ public:
                 }
             }
             size_t offset = _buffer.size();
+            if (offset > 100000000) {
+                LOG(WARNING) << "debug add too large offset=" << offset
+                             << " i=" << i << " _offsets.size()=" << _offsets.size()
+                             << " _buffer.size()=" << _buffer.size();
+                if (offset > 2000000000) {
+                    return Status::InternalError("debug add too large offset {}", offset);
+                }
+            }
             _offsets.push_back(offset);
             _buffer.append(src->data, src->size);
 
@@ -95,7 +103,14 @@ public:
         DCHECK(!_finished);
         _finished = true;
         // Set up trailer
+        size_t i = 0;
         for (uint32_t _offset : _offsets) {
+            if (_offset > 100000000 || _offset > _buffer.size()) {
+                LOG(WARNING) << "debug finish too large offset=" << _offset
+                             << " i=" << i << " _offsets.size()=" << _offsets.size()
+                             << " _buffer.size() " << _buffer.size();
+            }
+            i++;
             put_fixed32_le(&_buffer, _offset);
         }
         put_fixed32_le(&_buffer, _offsets.size());
