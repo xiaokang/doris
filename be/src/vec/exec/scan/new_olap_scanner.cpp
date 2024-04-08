@@ -608,9 +608,12 @@ void NewOlapScanner::_update_counters_before_close() {
     // Update metrics
     DorisMetrics::instance()->query_scan_bytes->increment(_compressed_bytes_read);
     DorisMetrics::instance()->query_scan_rows->increment(_raw_rows_read);
-    _tablet->query_scan_bytes->increment(_compressed_bytes_read);
-    _tablet->query_scan_rows->increment(_raw_rows_read);
-    _tablet->query_scan_count->increment(1);
+    if (_tablet && _tablet->query_scan_bytes && _tablet->query_scan_rows &&
+        _tablet->query_scan_count) {
+        _tablet->query_scan_bytes->increment(_compressed_bytes_read);
+        _tablet->query_scan_rows->increment(_raw_rows_read);
+        _tablet->query_scan_count->increment(1);
+    }
 }
 
 } // namespace doris::vectorized
