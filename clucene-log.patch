@@ -1,0 +1,113 @@
+diff --git a/src/core/CLucene/index/SDocumentWriter.cpp b/src/core/CLucene/index/SDocumentWriter.cpp
+index c757ba1a42..2be23eb3eb 100644
+--- a/src/core/CLucene/index/SDocumentWriter.cpp
++++ b/src/core/CLucene/index/SDocumentWriter.cpp
+@@ -337,6 +337,16 @@ void SDocumentsWriter<T>::ThreadState::FieldData::rehashPostings(const int32_t n
+
+     for (int32_t i = 0; i < postingsHashSize; i++) {
+         p0 = postingsHash[i];
++        // print the address of p0
++        if (reinterpret_cast<uintptr_t>(p0) > 0x1000000000000000) {
++            std::cerr << "Line 342, Address of p0: " << reinterpret_cast<void*>(p0) << std::endl;
++            throw CLuceneError(-8888, "Address is incorrect", false);
++        }
++        // print the address of postingsHash[i]
++        if (reinterpret_cast<uintptr_t>(postingsHash[i]) > 0x1000000000000000) {
++            std::cerr << "Line 347, Address of postingsHash[i]: " << reinterpret_cast<void*>(postingsHash[i]) << std::endl;
++            throw CLuceneError(-8888, "Address is incorrect", false);
++        }
+         if (p0 != nullptr) {
+             start = threadState->scharPool->buffers[p0->textStart >> CHAR_BLOCK_SHIFT] + (p0->textStart & CHAR_BLOCK_MASK);
+             _pos = start;
+@@ -480,6 +490,11 @@ void SDocumentsWriter<T>::ThreadState::FieldData::addPosition(Token *token) {
+
+     // Locate Posting in hash
+     threadState->p = postingsHash[hashPos];
++    // If threadState->p is greater than 0x1000000000000000, it is a incorrect address
++    if (reinterpret_cast<uintptr_t>(threadState->p) > 0x1000000000000000) {
++        std::cerr << "Line 495, Address of threadState->p: " << reinterpret_cast<void*>(threadState->p) << std::endl;
++        throw CLuceneError(-8888, "Address is incorrect", false);
++    }
+
+     if (threadState->p != nullptr && !eq(threadState->p->term_, term)) {
+         const uint32_t inc = ((code >> 8) + code) | 1;
+@@ -561,7 +576,28 @@ void SDocumentsWriter<T>::ThreadState::FieldData::addPosition(Token *token) {
+
+             assert(postingsHash[hashPos] == NULL);
+
++            // print the address of threadState->p
++            if (reinterpret_cast<uintptr_t>(threadState->p) > 0x1000000000000000) {
++                std::cerr << "Line 581, Address of threadState->p: " << reinterpret_cast<void*>(threadState->p) << std::endl;
++                throw CLuceneError(-8888, "Address is incorrect", false);
++            }
++            // print the address of postingsHash[hashPos]
++            if (reinterpret_cast<uintptr_t>(postingsHash[hashPos]) > 0x1000000000000000) {
++                std::cerr << "Line 586, Address of postingsHash[hashPos]: " << reinterpret_cast<void*>(postingsHash[hashPos]) << std::endl;
++                throw CLuceneError(-8888, "Address is incorrect", false);
++            }
++
+             postingsHash.values[hashPos] = threadState->p;
++            // print the address of threadState->p
++            if (reinterpret_cast<uintptr_t>(threadState->p) > 0x1000000000000000) {
++                std::cerr << "Line 593, Address of threadState->p: " << reinterpret_cast<void*>(threadState->p) << std::endl;
++                throw CLuceneError(-8888, "Address is incorrect", false);
++            }
++            // print the address of postingsHash[hashPos]
++            if (reinterpret_cast<uintptr_t>(postingsHash[hashPos]) > 0x1000000000000000) {
++                std::cerr << "Line 598, Address of postingsHash[hashPos]: " << reinterpret_cast<void*>(postingsHash[hashPos]) << std::endl;
++                throw CLuceneError(-8888, "Address is incorrect", false);
++            }
+             numPostings++;
+
+             if (numPostings == postingsHashHalfSize)
+@@ -769,6 +805,21 @@ void SDocumentsWriter<T>::ThreadState::quickSort(Posting **postings, int32_t lo,
+         return;
+
+     int32_t mid = ((uint32_t) (lo + hi)) >> 1;//unsigned shift...
++    // print the address of postings[lo]
++    if (reinterpret_cast<uintptr_t>(postings[lo]) > 0x1000000000000000) {
++        std::cerr << "Line 810, Address of postings[lo]: " << reinterpret_cast<void*>(postings[lo]) << std::endl;
++        throw CLuceneError(-8888, "Address is incorrect", false);
++    }
++    // print the address of postings[mid]
++    if (reinterpret_cast<uintptr_t>(postings[mid]) > 0x1000000000000000) {
++        std::cerr << "Line 815, Address of postings[mid]: " << reinterpret_cast<void*>(postings[mid]) << std::endl;
++        throw CLuceneError(-8888, "Address is incorrect", false);
++    }
++    // print the address of postings[hi]
++    if (reinterpret_cast<uintptr_t>(postings[hi]) > 0x1000000000000000) {
++        std::cerr << "Line 820, Address of postings[hi]: " << reinterpret_cast<void*>(postings[hi]) << std::endl;
++        throw CLuceneError(-8888, "Address is incorrect", false);
++    }
+
+     if (comparePostings(postings[lo], postings[mid]) > 0) {
+         Posting *tmp = postings[lo];
+diff --git a/src/core/CLucene/index/SDocumentWriter.h b/src/core/CLucene/index/SDocumentWriter.h
+index b1217ba18b..f5b2646f79 100644
+--- a/src/core/CLucene/index/SDocumentWriter.h
++++ b/src/core/CLucene/index/SDocumentWriter.h
+@@ -15,6 +15,8 @@
+ #include "_TermInfo.h"
+ #include "_TermInfosWriter.h"
+
++#include <iostream>
++
+ CL_CLASS_DEF(analysis, Analyzer)
+ CL_CLASS_DEF(analysis, Token)
+ CL_CLASS_DEF(analysis, TokenStream)
+@@ -252,8 +254,14 @@ public:
+             void compactPostings() {
+                 int32_t upto = 0;
+                 for (int32_t i = 0; i < postingsHashSize; i++)
+-                    if (postingsHash[i] != NULL)
++                    if (postingsHash[i] != NULL) {
+                         postingsHash.values[upto++] = postingsHash[i];
++                        // print the address of postingsHash[i]
++                        if (reinterpret_cast<uintptr_t>(postingsHash[i]) > 0x1000000000000000) {
++                            std::cerr << "Line 261, Address of postingsHash[i]: " << reinterpret_cast<void*>(postingsHash[i]) << std::endl;
++                            throw CLuceneError(-8888, "Address is incorrect", false);
++                        }
++                    }
+
+                 assert(upto == numPostings);
+                 postingsCompacted = true;
