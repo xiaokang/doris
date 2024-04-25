@@ -164,13 +164,14 @@ bool _has_inverted_index_or_partial_update(TOlapTableSink sink) {
     if (schema.is_partial_update()) {
         return true;
     }
-    for (const auto& index_schema : schema.indexes()) {
-        for (const auto& index : index_schema->indexes) {
-            if (index->index_type() == INVERTED) {
-                return true;
-            }
-        }
-    }
+    // tempraryly ignore inverted index for memtable sink
+    // for (const auto& index_schema : schema.indexes()) {
+    //     for (const auto& index : index_schema->indexes) {
+    //         if (index->index_type() == INVERTED) {
+    //             return true;
+    //         }
+    //     }
+    // }
     return false;
 }
 
